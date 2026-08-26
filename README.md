@@ -3,7 +3,7 @@
 Biblioteca de infraestrutura de banco de dados PostgreSQL-first para Go. Configuração via environment variables, modular, cloud-native. Porta idiomática de [Hellnet.Database](https://github.com/guilhermelinosp/hellnet-dep-database) (.NET).
 
 ```
-Env vars → Options → pgxpool.Pool → *DB / Repository[T]
+Env vars → Options → pgxpool.Pool → *DB / *Conn / Repository[T]
 ```
 
 ---
@@ -27,13 +27,41 @@ export HELLNET_DATABASE_PASSWORD=password
 ```
 
 ```go
-db, err := database.OpenFromEnv()
+// O contexto da aplicação é passado UMA VEZ, na construção:
+ctx := context.Background() // ou um ctx app-scoped/long-lived
+
+db, err := database.OpenFromEnv(ctx)
 ```
+
+> **Env-first é self-contained.** `OpenFromEnv`/`LoadFromEnv` carregam o `.env`
+> automaticamente (via `HELLNET_DATABASE_ENV_FILE`, `HELLNET_ENV_FILE` ou o
+> convencional `.env`/`./.env`) usando `hellnet-lib-environments`. O chamador
+> **não** precisa chamar nenhum loader de `.env` — basta definir as variáveis
+> (ou o arquivo) e abrir. Isso espelha o padrão das demais libs Hellnet
+> (`hellnet-lib-kafka`, `hellnet-lib-cache`, `hellnet-lib-telemetry`).
+
+### Contexto: uma vez no construtor
+
+O `context.Context` é capturado no `New`/`Connect` e **propagado internamente**
+pela lib com os timeouts de cada operação (`CommandTimeout`,
+`ConnectionTimeout`). Nenhum método operacional recebe ctx:
+
+```go
+ctx := context.Background()
+db, err := database.New(ctx) // env-first; database.New(ctx, opts...) p/ explícito
+
+n, err := db.Execute("UPDATE orders SET status = $1 WHERE id = $2", "done", id) // sem ctx
+page, err := repo.Paginate(spec, 1, 20)                                         // sem ctx
+```
+
+> Passe um contexto de **vida longa** (app-scoped). O cancelamento cooperativo
+> por-request continua disponível via middleware HTTP (onde a origem é o
+> request), não via parâmetro.
 
 ### Via options explícitas
 
 ```go
-db, err := database.New(database.Options{
+db, err := database.New(ctx, database.Options{
     Host:     "pg.internal",
     Database: "orders",
     Username: "app",
@@ -54,19 +82,19 @@ type Order struct {
 }
 
 // Query
-pending, err := database.Query[Order](ctx, db,
+pending, err := database.Query[Order](db,
     "SELECT * FROM orders WHERE status = $1", "pending")
 
 // Single row (não é erro quando não encontra)
-order, found, err := database.QueryRow[Order](ctx, db,
+order, found, err := database.QueryRow[Order](db,
     "SELECT * FROM orders WHERE id = $1", id)
 
 // Execute (insert/update/delete)
-affected, err := db.Execute(ctx,
+affected, err := db.Execute(
     "UPDATE orders SET status = $1 WHERE id = $2", "shipped", id)
 
 // Scalar
-count, err := database.Scalar[int64](ctx, db, "SELECT COUNT(*) FROM orders")
+count, err := database.Scalar[int64](db, "SELECT COUNT(*) FROM orders")
 ```
 
 O mapeamento segue as convenções do pgx: campos exportados por nome ou tag `db:"coluna"` (use `db:"-"` para ignorar campos; colunas viram snake_case quando não há tag).
@@ -78,12 +106,12 @@ O mapeamento segue as convenções do pgx: campos exportados por nome ou tag `db
 Commit automático. Se a função retorna erro → rollback automático.
 
 ```go
-err := db.Transactional(ctx, func(ctx context.Context, tx *database.Tx) error {
-    if _, err := tx.Execute(ctx,
+err := db.Transactional(func(tx *database.Tx) error {
+    if _, err := tx.Execute(
         "UPDATE accounts SET balance = balance - 100 WHERE id = $1", 1); err != nil {
         return err
     }
-    _, err := tx.Execute(ctx,
+    _, err := tx.Execute(
         "UPDATE accounts SET balance = balance + 100 WHERE id = $1", 2)
     return err
 })
@@ -92,10 +120,84 @@ err := db.Transactional(ctx, func(ctx context.Context, tx *database.Tx) error {
 Dentro da transação use os helpers `Tx*` (sem retry — retry parcial dentro de transação seria incorreto):
 
 ```go
-total, err := database.TxScalar[int64](ctx, tx, "SELECT SUM(balance) FROM accounts")
-rows, err := database.TxQuery[Order](ctx, tx, "SELECT * FROM orders")
-one, found, err := database.TxQueryRow[Order](ctx, tx, "...", args...)
+total, err := database.TxScalar[int64](tx, "SELECT SUM(balance) FROM accounts")
+rows, err := database.TxQuery[Order](tx, "SELECT * FROM orders")
+one, found, err := database.TxQueryRow[Order](tx, "...", args...)
 ```
+
+### Conexões dedicadas
+
+Além do pool (que já multiplexa várias conexões automaticamente), a lib expõe
+controle explícito de conexão para três necessidades:
+
+- **Abrir e fechar conexões** (ciclo de vida próprio);
+- **Usar múltiplas conexões** (vários `Acquire` em paralelo);
+- **Usar uma única conexão para N interações** (pin de sessão).
+
+#### Do pool: `Acquire` / `Close`
+
+`Acquire` pega **uma** conexão do pool e a fixa no `*Conn` até `Close`
+(devolvendo-a ao pool). Ideal para um batch de N operações que devem dividir
+a mesma sessão, ou para dirigir múltiplas conexões manualmente.
+
+```go
+conn, err := db.Acquire()
+if err != nil { /* ... */ }
+defer func() { _ = conn.Close() }() // devolve ao pool
+
+rows, err := database.ConnQuery[Order](conn,
+    "SELECT * FROM orders WHERE status = $1", "pending")
+affected, err := conn.Execute(
+    "UPDATE orders SET status = $1 WHERE id = $2", "done", id)
+```
+
+#### Sem pool: `Connect` / `Close`
+
+`Connect` abre **uma** conexão standalone (sem pool) a partir de options — para
+programas curtos, scripts ou quando se quer exatamente uma conexão com controle
+total de open/close.
+
+```go
+conn, err := database.Connect(ctx, database.Options{
+    Host: "pg.internal", Database: "orders", Username: "app", Password: "secret",
+})
+if err != nil { /* ... */ }
+defer func() { _ = conn.Close() }()
+
+count, err := database.ConnScalar[int64](conn, "SELECT COUNT(*) FROM orders")
+```
+
+#### Transação sobre conexão dedicada: `Begin` / `Commit` / `Rollback`
+
+`Conn.Begin` inicia uma transação na conexão fixa; o chamador decide quando
+fazer `Commit`/`Rollback`. Mantenha o `Conn` aberto até a transação terminar e
+só então `Close`.
+
+```go
+conn, err := db.Acquire()
+if err != nil { /* ... */ }
+defer func() { _ = conn.Close() }()
+
+tx, err := conn.Begin()
+if err != nil { /* ... */ }
+
+if _, err := tx.Execute(
+    "UPDATE accounts SET balance = balance - 100 WHERE id = $1", 1); err != nil {
+    _ = tx.Rollback()
+    return err
+}
+if _, err := tx.Execute(
+    "UPDATE accounts SET balance = balance + 100 WHERE id = $1", 2); err != nil {
+    _ = tx.Rollback()
+    return err
+}
+if err := tx.Commit(); err != nil { return err }
+```
+
+> `Conn` (e `Tx`) **não** retentam: reexecutar trabalho parcialmente aplicado
+> numa conexão fixa seria incorreto — o chamador decide o retry de toda a
+> unidade. Use `conn.Transactional(fn)` para o modo automático
+> (commit/rollback) sobre a conexão dedicada.
 
 ### Repository Pattern
 
@@ -104,17 +206,17 @@ orders := database.NewRepositoryForTable[Order](db, "orders") // tabela explíci
 orders := database.NewRepository[Order](db)                   // ou nome(T), como no .NET typeof(T).Name
 
 
-order, found, err := orders.GetByID(ctx, 42)
-all, err := orders.GetAll(ctx)
+order, found, err := orders.GetByID(42)
+all, err := orders.GetAll()
 
 spec := database.Specification{
     SQL:     "SELECT * FROM orders WHERE status = $1",
     Args:    []any{"pending"},
     OrderBy: "created_at DESC",
 }
-matches, err := orders.Find(ctx, spec)
-page, err := orders.Paginate(ctx, spec, 1, 20) // página 1-based + total
-n, err := orders.Count(ctx, spec)
+matches, err := orders.Find(spec)
+page, err := orders.Paginate(spec, 1, 20) // página 1-based + total
+n, err := orders.Count(spec)
 ```
 
 ### Resultados tipados
@@ -179,8 +281,9 @@ export HELLNET_DATABASE_RETRY_ENABLED=false
 ```
 hellnet-lib-database/database
 ├── database.go        ← Options (env-first), DB, pool pgxpool
-├── executor.go        ← Execute, Query[T], QueryRow[T], Scalar[T]
-├── transaction.go     ← Transactional (commit/rollback), helpers Tx*
+├── core.go            ← Execute, Query[T], QueryRow[T], Scalar[T] (núcleo genérico)
+├── connection.go      ← Conn (Acquire/Connect), Conn* helpers, Begin/Transactional
+├── transaction.go     ← Tx, Transactional (commit/rollback), helpers Tx*, Commit/Rollback
 ├── repository.go      ← Repository[T], Specification, paginação
 ├── results.go         ← Result[T], PageResult[T]
 └── resilience.go      ← RetryPolicy + discriminação de SQLSTATE
@@ -192,7 +295,7 @@ hellnet-lib-database/database
 |---|---|
 | `NpgsqlDataSource` | `pgxpool.Pool` |
 | Dapper | `pgx.CollectRows` + tags `db:` |
-| `IDatabaseExecutor.QueryAsync<T>` | `database.Query[T](ctx, db, …)` |
+| `IDatabaseExecutor.QueryAsync<T>` | `database.Query[T](db, …)` |
 | `IDatabaseTransaction` | `db.Transactional(…)` |
 | `IRepository<T>` / `ISpecification<T>` | `Repository[T]` / `Specification` |
 | `DatabaseResult<T>` / `PageResult<T>` | `Result[T]` / `PageResult[T]` |

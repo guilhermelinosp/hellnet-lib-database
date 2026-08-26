@@ -20,11 +20,25 @@ type runner interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// conn carries the backend (pool or live transaction) plus the effective
-// options. Both DB and Tx embed it, so the typed core below is written once.
+// conn carries the backend (pool or live transaction), the effective options
+// and the context captured ONCE at construction time (New/Connect) — every
+// operation derives its per-command context from it internally, so no public
+// method takes a context.Context.
 type conn struct {
-	r runner
-	o Options
+	r   runner
+	o   Options
+	ctx context.Context
+}
+
+// base returns the construction-time context, falling back to
+// context.Background() when none was stored. All internal timeouts are
+// derived from it (CommandTimeout for statements, ConnectionTimeout for
+// begin/acquire/connect paths).
+func (c *conn) base() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
 }
 
 // timeout bounds ctx with the given command timeout.
@@ -47,9 +61,10 @@ func track(o Options, start time.Time, sql string) {
 // (pool or transaction) instead of a receiver.
 
 // runQuery maps every row into T using pgx conventions: exported fields
-// matched by name or by a `db:"column"` tag.
-func runQuery[T any](ctx context.Context, c *conn, sql string, args ...any) ([]T, error) {
-	cctx, cancel := timeout(ctx, c.o.CommandTimeout)
+// matched by name or by a `db:"column"` tag. The context is the one captured
+// once at construction, bounded by CommandTimeout.
+func runQuery[T any](c *conn, sql string, args ...any) ([]T, error) {
+	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
 	defer cancel()
 
 	start := time.Now()
@@ -66,11 +81,12 @@ func runQuery[T any](ctx context.Context, c *conn, sql string, args ...any) ([]T
 
 // runQueryRow runs a query expected to return at most one row. found reports
 // whether a row exists; an empty result is not an error (mirrors .NET's
-// QueryFirstOrDefaultAsync returning null).
-func runQueryRow[T any](ctx context.Context, c *conn, sql string, args ...any) (T, bool, error) {
+// QueryFirstOrDefaultAsync returning null). The context is the one captured
+// once at construction, bounded by CommandTimeout.
+func runQueryRow[T any](c *conn, sql string, args ...any) (T, bool, error) {
 	var zero T
 
-	cctx, cancel := timeout(ctx, c.o.CommandTimeout)
+	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
 	defer cancel()
 
 	start := time.Now()
@@ -92,9 +108,10 @@ func runQueryRow[T any](ctx context.Context, c *conn, sql string, args ...any) (
 	}
 }
 
-// runScalar scans a single-column, single-row result into T.
-func runScalar[T any](ctx context.Context, c *conn, sql string, args ...any) (T, error) {
-	cctx, cancel := timeout(ctx, c.o.CommandTimeout)
+// runScalar scans a single-column, single-row result into T. The context is
+// the one captured once at construction, bounded by CommandTimeout.
+func runScalar[T any](c *conn, sql string, args ...any) (T, error) {
+	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
 	defer cancel()
 
 	var value T
@@ -107,9 +124,10 @@ func runScalar[T any](ctx context.Context, c *conn, sql string, args ...any) (T,
 }
 
 // Execute runs a command and returns affected rows. Shared through embedding:
-// DB shadows it with a retry-wrapping version, Tx inherits it verbatim.
-func (c *conn) Execute(ctx context.Context, sql string, args ...any) (int64, error) {
-	cctx, cancel := timeout(ctx, c.o.CommandTimeout)
+// DB shadows it with a retry-wrapping version, Tx inherits it verbatim. The
+// context is the one captured once at construction, bounded by CommandTimeout.
+func (c *conn) Execute(sql string, args ...any) (int64, error) {
+	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
 	defer cancel()
 
 	start := time.Now()
@@ -122,10 +140,11 @@ func (c *conn) Execute(ctx context.Context, sql string, args ...any) (int64, err
 }
 
 // retried applies p.Do around fn, unifying the value-carrying retry boilerplate
-// for every typed operation.
-func retried[T any](ctx context.Context, p RetryPolicy, fn func() (T, error)) (T, error) {
+// for every typed operation. Cancellation surfaces as the error returned by fn
+// (per-attempt contexts are derived internally from the stored base context).
+func retried[T any](p RetryPolicy, fn func() (T, error)) (T, error) {
 	var out T
-	err := p.Do(ctx, func() error {
+	err := p.Do(func() error {
 		var err error
 		out, err = fn()
 		return err
@@ -137,28 +156,28 @@ func retried[T any](ctx context.Context, p RetryPolicy, fn func() (T, error)) (T
 
 // Execute runs a command (INSERT/UPDATE/DELETE/DDL) and returns the number of
 // affected rows. Transient failures are retried when retry is enabled.
-func (db *DB) Execute(ctx context.Context, sql string, args ...any) (int64, error) {
-	return retried(ctx, db.retry, func() (int64, error) {
-		return db.conn.Execute(ctx, sql, args...)
+func (db *DB) Execute(sql string, args ...any) (int64, error) {
+	return retried(db.retry, func() (int64, error) {
+		return db.conn.Execute(sql, args...)
 	})
 }
 
 // Query runs a SELECT and maps every row into a T. Transient failures are
 // retried when retry is enabled.
-func Query[T any](ctx context.Context, db *DB, sql string, args ...any) ([]T, error) {
-	return retried(ctx, db.retry, func() ([]T, error) {
-		return runQuery[T](ctx, &db.conn, sql, args...)
+func Query[T any](db *DB, sql string, args ...any) ([]T, error) {
+	return retried(db.retry, func() ([]T, error) {
+		return runQuery[T](&db.conn, sql, args...)
 	})
 }
 
 // QueryRow runs a query expected to return at most one row. Transient failures
 // are retried when retry is enabled.
-func QueryRow[T any](ctx context.Context, db *DB, sql string, args ...any) (T, bool, error) {
+func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 	var out T
 	var found bool
 
-	err := db.retry.Do(ctx, func() error {
-		v, f, err := runQueryRow[T](ctx, &db.conn, sql, args...)
+	err := db.retry.Do(func() error {
+		v, f, err := runQueryRow[T](&db.conn, sql, args...)
 		out, found = v, f
 		return err
 	})
@@ -168,8 +187,8 @@ func QueryRow[T any](ctx context.Context, db *DB, sql string, args ...any) (T, b
 
 // Scalar runs a single-value query and scans it into T. Transient failures are
 // retried when retry is enabled.
-func Scalar[T any](ctx context.Context, db *DB, sql string, args ...any) (T, error) {
-	return retried(ctx, db.retry, func() (T, error) {
-		return runScalar[T](ctx, &db.conn, sql, args...)
+func Scalar[T any](db *DB, sql string, args ...any) (T, error) {
+	return retried(db.retry, func() (T, error) {
+		return runScalar[T](&db.conn, sql, args...)
 	})
 }

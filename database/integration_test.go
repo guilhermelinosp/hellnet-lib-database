@@ -59,15 +59,14 @@ func integrationOptions(t *testing.T) Options {
 
 func openIntegrationDB(t *testing.T) *DB {
 	t.Helper()
-	db, err := New(integrationOptions(t))
+	// Context is captured once at construction and propagated internally.
+	db, err := New(context.Background(), integrationOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(db.Close)
+	t.Cleanup(func() { _ = db.Close() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := db.Ping(ctx); err != nil {
+	if err := db.Ping(); err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
 	return db
@@ -75,7 +74,6 @@ func openIntegrationDB(t *testing.T) *DB {
 
 func resetOrdersTable(t *testing.T, db *DB) {
 	t.Helper()
-	ctx := context.Background()
 	for _, ddl := range []string{
 		`DROP TABLE IF EXISTS orders`,
 		`CREATE TABLE orders (
@@ -85,7 +83,7 @@ func resetOrdersTable(t *testing.T, db *DB) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 	} {
-		if _, err := db.Execute(ctx, ddl); err != nil {
+		if _, err := db.Execute(ddl); err != nil {
 			t.Fatalf("ddl %q: %v", ddl, err)
 		}
 	}
@@ -101,16 +99,15 @@ type order struct {
 func TestIntegrationCRUDAndTypedQueries(t *testing.T) {
 	db := openIntegrationDB(t)
 	resetOrdersTable(t, db)
-	ctx := context.Background()
 
-	n, err := db.Execute(ctx,
+	n, err := db.Execute(
 		"INSERT INTO orders (status, total) VALUES ($1,$2), ($1,$3), ($4,$5)",
 		"pending", 10.5, 20.0, "shipped", 99.9)
 	if err != nil || n != 3 {
 		t.Fatalf("insert: affected=%d err=%v", n, err)
 	}
 
-	pending, err := Query[order](ctx, db, "SELECT * FROM orders WHERE status = $1 ORDER BY id", "pending")
+	pending, err := Query[order](db, "SELECT * FROM orders WHERE status = $1 ORDER BY id", "pending")
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -118,12 +115,12 @@ func TestIntegrationCRUDAndTypedQueries(t *testing.T) {
 		t.Fatalf("Query result wrong: %+v", pending)
 	}
 
-	got, found, err := QueryRow[order](ctx, db, "SELECT * FROM orders WHERE id = $1", pending[0].ID)
+	got, found, err := QueryRow[order](db, "SELECT * FROM orders WHERE id = $1", pending[0].ID)
 	if err != nil || !found || got.ID != pending[0].ID {
 		t.Fatalf("QueryRow: got=%+v found=%v err=%v", got, found, err)
 	}
 
-	missing, found, err := QueryRow[order](ctx, db, "SELECT * FROM orders WHERE id = $1", -1)
+	missing, found, err := QueryRow[order](db, "SELECT * FROM orders WHERE id = $1", -1)
 	if err != nil {
 		t.Fatalf("QueryRow(not found) returned error: %v", err)
 	}
@@ -135,12 +132,12 @@ func TestIntegrationCRUDAndTypedQueries(t *testing.T) {
 		t.Fatalf("QueryRow(not found): expected zero value, got %+v", missing)
 	}
 
-	count, err := Scalar[int64](ctx, db, "SELECT COUNT(*) FROM orders")
+	count, err := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
 	if err != nil || count != 3 {
 		t.Fatalf("Scalar: count=%d err=%v", count, err)
 	}
 
-	updated, err := db.Execute(ctx, "UPDATE orders SET status = $1 WHERE status = $2", "done", "pending")
+	updated, err := db.Execute("UPDATE orders SET status = $1 WHERE status = $2", "done", "pending")
 	if err != nil || updated != 2 {
 		t.Fatalf("update: affected=%d err=%v", updated, err)
 	}
@@ -157,9 +154,8 @@ type orderLite struct {
 func TestIntegrationRepositoryPartialStruct(t *testing.T) {
 	db := openIntegrationDB(t)
 	resetOrdersTable(t, db)
-	ctx := context.Background()
 
-	if _, err := db.Execute(ctx,
+	if _, err := db.Execute(
 		"INSERT INTO orders (status, total) VALUES ($1, $2), ($1, $3)",
 		"pending", 10.5, 20.0); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -170,12 +166,12 @@ func TestIntegrationRepositoryPartialStruct(t *testing.T) {
 		t.Fatalf("table = %q", repo.Table())
 	}
 
-	all, err := repo.GetAll(ctx)
+	all, err := repo.GetAll()
 	if err != nil || len(all) != 2 || all[0].Status != "pending" {
 		t.Fatalf("GetAll: %+v err=%v", all, err)
 	}
 
-	got, found, err := repo.GetByID(ctx, all[0].ID)
+	got, found, err := repo.GetByID(all[0].ID)
 	if err != nil || !found || got.ID != all[0].ID {
 		t.Fatalf("GetByID: got=%+v found=%v err=%v", got, found, err)
 	}
@@ -185,7 +181,7 @@ func TestIntegrationRepositoryPartialStruct(t *testing.T) {
 		Args:    []any{"pending"},
 		OrderBy: "id",
 	}
-	page, err := repo.Paginate(ctx, spec, 1, 1)
+	page, err := repo.Paginate(spec, 1, 1)
 	if err != nil {
 		t.Fatalf("Paginate: %v", err)
 	}
@@ -193,7 +189,7 @@ func TestIntegrationRepositoryPartialStruct(t *testing.T) {
 		t.Fatalf("Paginate result wrong: %+v", page)
 	}
 
-	count, err := repo.Count(ctx, spec)
+	count, err := repo.Count(spec)
 	if err != nil || count != 2 {
 		t.Fatalf("Count: %d err=%v", count, err)
 	}
@@ -202,20 +198,19 @@ func TestIntegrationRepositoryPartialStruct(t *testing.T) {
 func TestIntegrationTransactionalCommit(t *testing.T) {
 	db := openIntegrationDB(t)
 	resetOrdersTable(t, db)
-	ctx := context.Background()
 
-	err := db.Transactional(ctx, func(ctx context.Context, tx *Tx) error {
+	err := db.Transactional(func(tx *Tx) error {
 		for i := 1; i <= 2; i++ {
-			if _, err := tx.Execute(ctx,
+			if _, err := tx.Execute(
 				"INSERT INTO orders (status, total) VALUES ($1, $2)", "tx", float64(i)); err != nil {
 				return err
 			}
 		}
-		count, err := TxScalar[int64](ctx, tx, "SELECT COUNT(*) FROM orders")
+		count, err := TxScalar[int64](tx, "SELECT COUNT(*) FROM orders")
 		if err != nil || count != 2 {
 			t.Errorf("in-tx count = %d err = %v, want 2", count, err)
 		}
-		rows, err := TxQuery[order](ctx, tx, "SELECT * FROM orders ORDER BY id")
+		rows, err := TxQuery[order](tx, "SELECT * FROM orders ORDER BY id")
 		if err != nil || len(rows) != 2 {
 			t.Errorf("TxQuery: rows=%d err=%v", len(rows), err)
 		}
@@ -225,7 +220,7 @@ func TestIntegrationTransactionalCommit(t *testing.T) {
 		t.Fatalf("Transactional: %v", err)
 	}
 
-	count, _ := Scalar[int64](ctx, db, "SELECT COUNT(*) FROM orders")
+	count, _ := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
 	if count != 2 {
 		t.Fatalf("post-commit count = %d, want 2", count)
 	}
@@ -234,11 +229,10 @@ func TestIntegrationTransactionalCommit(t *testing.T) {
 func TestIntegrationTransactionalRollback(t *testing.T) {
 	db := openIntegrationDB(t)
 	resetOrdersTable(t, db)
-	ctx := context.Background()
 
 	boom := errors.New("boom")
-	err := db.Transactional(ctx, func(ctx context.Context, tx *Tx) error {
-		if _, err := tx.Execute(ctx,
+	err := db.Transactional(func(tx *Tx) error {
+		if _, err := tx.Execute(
 			"INSERT INTO orders (status) VALUES ('rollback-me')"); err != nil {
 			return err
 		}
@@ -248,7 +242,7 @@ func TestIntegrationTransactionalRollback(t *testing.T) {
 		t.Fatalf("Transactional err = %v, want boom", err)
 	}
 
-	count, _ := Scalar[int64](ctx, db, "SELECT COUNT(*) FROM orders")
+	count, _ := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
 	if count != 0 {
 		t.Fatalf("post-rollback count = %d, want 0", count)
 	}
@@ -256,23 +250,22 @@ func TestIntegrationTransactionalRollback(t *testing.T) {
 
 func TestIntegrationUniqueViolationNotRetried(t *testing.T) {
 	db := openIntegrationDB(t)
-	ctx := context.Background()
 
 	// Dedicated table with a plain PK so explicit ids (and their duplicates)
 	// are allowed — GENERATED ALWAYS AS IDENTITY would reject them.
-	if _, err := db.Execute(ctx,
+	if _, err := db.Execute(
 		"CREATE TABLE dup_test (id INT PRIMARY KEY, status TEXT)"); err != nil {
 		t.Fatalf("create dup_test: %v", err)
 	}
-	t.Cleanup(func() { _, _ = db.Execute(ctx, "DROP TABLE IF EXISTS dup_test") })
+	t.Cleanup(func() { _, _ = db.Execute("DROP TABLE IF EXISTS dup_test") })
 
-	if _, err := db.Execute(ctx,
+	if _, err := db.Execute(
 		"INSERT INTO dup_test (id, status) VALUES (7, 'first')"); err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}
 
 	start := time.Now()
-	_, err := db.Execute(ctx, "INSERT INTO dup_test (id, status) VALUES (7, 'dup')")
+	_, err := db.Execute("INSERT INTO dup_test (id, status) VALUES (7, 'dup')")
 	elapsed := time.Since(start)
 
 	var pgErr *pgconn.PgError
@@ -290,4 +283,162 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// ── Dedicated connections: Acquire / Connect / Begin ─────────────
+
+func TestIntegrationAcquireSingleConn(t *testing.T) {
+	db := openIntegrationDB(t)
+	resetOrdersTable(t, db)
+
+	conn, err := db.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Execute(
+		"INSERT INTO orders (status, total) VALUES ($1,$2)", "pending", 10.5); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, found, err := ConnQueryRow[order](conn, "SELECT * FROM orders WHERE status = $1", "pending")
+	if err != nil || !found || got.Status != "pending" || got.Total != 10.5 {
+		t.Fatalf("ConnQueryRow: got=%+v found=%v err=%v", got, found, err)
+	}
+
+	count, err := ConnScalar[int64](conn, "SELECT COUNT(*) FROM orders")
+	if err != nil || count != 1 {
+		t.Fatalf("ConnScalar: count=%d err=%v", count, err)
+	}
+
+	// Close must be safe to call more than once (idempotent).
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestIntegrationAcquireMultipleConns(t *testing.T) {
+	db := openIntegrationDB(t)
+	resetOrdersTable(t, db)
+
+	const n = 3
+	conns := make([]*Conn, n)
+	for i := range conns {
+		c, err := db.Acquire()
+		if err != nil {
+			t.Fatalf("Acquire %d: %v", i, err)
+		}
+		defer func() { _ = c.Close() }()
+		conns[i] = c
+	}
+
+	// Each pinned connection can run independently; together they represent
+	// explicit multi-connection usage on top of the pool.
+	for i, c := range conns {
+		if _, err := c.Execute(
+			"INSERT INTO orders (status, total) VALUES ($1,$2)", fmt.Sprintf("c%d", i), float64(i)); err != nil {
+			t.Fatalf("insert on conn %d: %v", i, err)
+		}
+	}
+	count, err := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
+	if err != nil || count != n {
+		t.Fatalf("count=%d err=%v, want %d", count, err, n)
+	}
+}
+
+func TestIntegrationConnectSingleConn(t *testing.T) {
+	// Connect is construction-time: it captures the context once on the Conn.
+	ctx := context.Background()
+	conn, err := Connect(ctx, integrationOptions(t))
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Execute(
+		"INSERT INTO orders (status, total) VALUES ($1,$2)", "standalone", 1.0); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := ConnQuery[order](conn, "SELECT * FROM orders WHERE status = $1", "standalone")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ConnQuery: rows=%v err=%v", rows, err)
+	}
+}
+
+func TestIntegrationConnBeginCommitRollback(t *testing.T) {
+	db := openIntegrationDB(t)
+	resetOrdersTable(t, db)
+
+	conn, err := db.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Commit path.
+	tx, err := conn.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := tx.Execute("INSERT INTO orders (status) VALUES ('committed')"); err != nil {
+		t.Fatalf("tx insert: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Rollback path.
+	tx, err = conn.Begin()
+	if err != nil {
+		t.Fatalf("Begin(2): %v", err)
+	}
+	if _, err := tx.Execute("INSERT INTO orders (status) VALUES ('rolledback')"); err != nil {
+		t.Fatalf("tx insert(2): %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	count, err := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
+	if err != nil || count != 1 {
+		t.Fatalf("after commit/rollback count=%d err=%v, want 1", count, err)
+	}
+}
+
+func TestIntegrationConnTransactional(t *testing.T) {
+	db := openIntegrationDB(t)
+	resetOrdersTable(t, db)
+
+	conn, err := db.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Commits on success.
+	if err := conn.Transactional(func(tx *Tx) error {
+		if _, err := tx.Execute("INSERT INTO orders (status) VALUES ('ok')"); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Transactional(commit): %v", err)
+	}
+
+	// Rolls back on error.
+	boom := errors.New("boom")
+	if err := conn.Transactional(func(tx *Tx) error {
+		if _, err := tx.Execute("INSERT INTO orders (status) VALUES ('bad')"); err != nil {
+			return err
+		}
+		return boom
+	}); err == nil {
+		t.Fatal("Transactional(rollback): expected error")
+	}
+
+	count, err := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
+	if err != nil || count != 1 {
+		t.Fatalf("after tx count=%d err=%v, want 1", count, err)
+	}
 }
