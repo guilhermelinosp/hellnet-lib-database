@@ -72,23 +72,16 @@ func (p RetryPolicy) shouldRetry(err error, attempt int) bool {
 }
 
 // sleep waits for the exponential backoff delay after attempt (0-based):
-// baseDelay << attempt. It returns early on context cancellation.
-func (p RetryPolicy) sleep(ctx context.Context, attempt int) error {
-	delay := p.baseDelay << attempt
-
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+// baseDelay << attempt. It is a plain timer: cancellation surfaces as an error
+// returned by fn (per-attempt contexts are derived internally from the stored
+// base context), so no context is needed here.
+func (p RetryPolicy) sleep(attempt int) {
+	time.Sleep(p.baseDelay << attempt)
 }
 
 // Do runs fn retrying transient failures up to maxCount times with exponential
 // backoff. A disabled policy runs fn once.
-func (p RetryPolicy) Do(ctx context.Context, fn func() error) error {
+func (p RetryPolicy) Do(fn func() error) error {
 	if !p.enabled {
 		return fn()
 	}
@@ -99,13 +92,11 @@ func (p RetryPolicy) Do(ctx context.Context, fn func() error) error {
 		if err == nil {
 			return nil
 		}
-		if ctx.Err() != nil || !p.shouldRetry(err, attempt) {
+		if !p.shouldRetry(err, attempt) {
 			return err
 		}
 		slog.Warn("database: transient error, retrying",
 			"attempt", attempt+2, "max", p.maxCount+1, "error", err)
-		if serr := p.sleep(ctx, attempt); serr != nil {
-			return err
-		}
+		p.sleep(attempt)
 	}
 }

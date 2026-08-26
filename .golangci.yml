@@ -30,6 +30,7 @@ linters:
     paths:
       - "_test\\.go$"
       - "^_examples/"
+      - "^example/"
 
 formatters:
   enable:
