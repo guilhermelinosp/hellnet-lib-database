@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,35 +64,46 @@ func (tx *Tx) Rollback() error {
 	return pgxTx.Rollback(cctx)
 }
 
-// Transactional runs fn atomically: fn's operations share one connection and
-// commit together. If fn returns an error the transaction is rolled back and
-// the error is returned; a rollback failure is joined into the returned error.
-// The context captured once at New is propagated internally to begin, fn's
-// statements, commit and rollback (CommandTimeout bounds the terminal
-// statements, ConnectionTimeout bounds Begin). This mirrors the .NET
-// IDatabaseTransaction.ExecuteAsync contract.
-func (db *DB) Transactional(fn func(tx *Tx) error) error {
-	cctx, cancel := timeout(db.base(), db.o.ConnectionTimeout)
-	pgxconn, err := db.pool.Begin(cctx)
+// beginTxBounded begins a transaction bounded by ConnectionTimeout.
+func beginTxBounded(base context.Context, o Options, begin func(context.Context) (pgx.Tx, error)) (pgx.Tx, error) {
+	cctx, cancel := timeout(base, o.ConnectionTimeout)
+	pgxTx, err := begin(cctx)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("database: begin transaction: %w", err)
+		return nil, fmt.Errorf("database: begin transaction: %w", err)
+	}
+	return pgxTx, nil
+}
+
+// runTransactional is the shared body of DB.Transactional and
+// Conn.Transactional: begin (caller-supplied), run fn atomically, and resolve
+// the transaction. Compensation paths use fresh or live-lineage contexts so a
+// rollback never reuses an expired one, and rollback failures are warned — a
+// swallowed failure would leak the pooled connection.
+func runTransactional(
+	begin func(context.Context) (pgx.Tx, error),
+	base func() context.Context,
+	o Options,
+	fn func(tx *Tx) error,
+) error {
+	pgxTx, err := beginTxBounded(base(), o, begin)
+	if err != nil {
+		return err
 	}
 
-	tx := &Tx{conn: conn{r: pgxconn, o: db.o, ctx: db.ctx}}
+	tx := &Tx{conn: conn{r: pgxTx, o: o, ctx: base()}}
 
-	// done tracks whether fn resolved the transaction (commit or rollback).
-	// A deferred rollback releases the pooled connection if fn panics, since a
-	// panic would otherwise unwind past both Commit and the explicit Rollback
-	// and leak the connection acquired by Begin. It uses a FRESH timeout:
-	// whatever failure caused this path may have expired the derived contexts,
-	// and a swallowed rollback error would leak the pooled connection.
+	// done tracks whether fn resolved the transaction. A deferred rollback
+	// releases the connection if fn panics: a panic would otherwise unwind
+	// past both Commit and the explicit Rollback and leak it. It uses a FRESH
+	// timeout: whatever failure caused this path may have expired the derived
+	// contexts.
 	done := false
 	defer func() {
 		if !done {
-			rctx, rcancel := freshRollbackCtx(db.o)
+			rctx, rcancel := freshRollbackCtx(o)
 			defer rcancel()
-			if rbErr := pgxconn.Rollback(rctx); rbErr != nil {
+			if rbErr := pgxTx.Rollback(rctx); rbErr != nil {
 				slog.Warn("database: deferred rollback after panic",
 					"error", errors.Join(fmt.Errorf("database: rollback: %w", rbErr)))
 			}
@@ -99,11 +111,8 @@ func (db *DB) Transactional(fn func(tx *Tx) error) error {
 	}()
 
 	if err := fn(tx); err != nil {
-		// Keep the caller's (stored) context when still alive so rollback
-		// honors its values; fall back to a fresh Background-backed context
-		// when that lineage is already done.
-		rctx, rcancel := rollbackCtx(db.base(), db.o)
-		rbErr := pgxconn.Rollback(rctx)
+		rctx, rcancel := rollbackCtx(base(), o)
+		rbErr := pgxTx.Rollback(rctx)
 		rcancel()
 		if rbErr != nil {
 			return errors.Join(err, fmt.Errorf("database: rollback: %w", rbErr))
@@ -112,28 +121,38 @@ func (db *DB) Transactional(fn func(tx *Tx) error) error {
 		return err
 	}
 
-	mctx, mcancel := timeout(db.base(), db.o.CommandTimeout)
-	comErr := pgxconn.Commit(mctx)
+	mctx, mcancel := timeout(base(), o.CommandTimeout)
+	comErr := pgxTx.Commit(mctx)
 	mcancel()
 	if comErr != nil {
 		// A failed commit leaves the transaction aborted server-side; still
-		// attempt a rollback to release the connection cleanly. Use a FRESH
-		// Background-backed timeout: the commit usually failed exactly
-		// because its context hit the deadline, making mctx instantly futile.
-		rctx, rcancel := freshRollbackCtx(db.o)
-		rbErr := pgxconn.Rollback(rctx)
+		// attempt a rollback to release the connection cleanly. The commit
+		// usually failed exactly because its context hit the deadline, so use
+		// a FRESH Background-backed timeout.
+		rctx, rcancel := freshRollbackCtx(o)
+		rbErr := pgxTx.Rollback(rctx)
 		rcancel()
 		if rbErr != nil {
 			slog.Warn("database: post-commit-failure rollback",
 				"error", errors.Join(comErr, fmt.Errorf("database: rollback: %w", rbErr)))
 		}
-		// The transaction is fully resolved (failed commit + compensation);
-		// keep the deferred rollback out of it.
 		done = true
 		return fmt.Errorf("database: commit: %w", comErr)
 	}
 	done = true
 	return nil
+}
+
+// Transactional runs fn atomically on the pooled connection: fn's operations
+// share one connection and commit together. If fn returns an error the
+// transaction is rolled back and the error is returned; a rollback failure is
+// joined into the returned error. The context captured once at New is
+// propagated internally (CommandTimeout bounds the terminal statements,
+// ConnectionTimeout bounds Begin). This mirrors the .NET
+// IDatabaseTransaction.ExecuteAsync contract.
+func (db *DB) Transactional(fn func(tx *Tx) error) error {
+	return runTransactional(func(c context.Context) (pgx.Tx, error) { return db.pool.Begin(c) },
+		db.base, db.o, fn)
 }
 
 var (

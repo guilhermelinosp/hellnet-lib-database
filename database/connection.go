@@ -2,7 +2,6 @@ package database
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -144,68 +143,7 @@ func (c *Conn) Begin() (*Tx, error) {
 // fn's statements, commit and rollback. The Conn itself stays open after the
 // call — call Close when finished with it.
 func (c *Conn) Transactional(fn func(tx *Tx) error) error {
-	cctx, cancel := timeout(c.base(), c.o.ConnectionTimeout)
-	pgxTx, err := c.beginFn(cctx)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("database: begin transaction: %w", err)
-	}
-
-	tx := &Tx{conn: conn{r: pgxTx, o: c.o, ctx: c.ctx}}
-
-	// done tracks whether fn resolved the transaction. A deferred rollback
-	// releases the connection if fn panics, since a panic would otherwise
-	// unwind past both Commit and the explicit Rollback and leak it. It uses a
-	// FRESH timeout: whatever failure caused this path may have expired the
-	// derived contexts, and a swallowed rollback error would leak the conn.
-	done := false
-	defer func() {
-		if !done {
-			rctx, rcancel := freshRollbackCtx(c.o)
-			defer rcancel()
-			if rbErr := pgxTx.Rollback(rctx); rbErr != nil {
-				slog.Warn("database: deferred rollback after panic",
-					"error", errors.Join(fmt.Errorf("database: rollback: %w", rbErr)))
-			}
-		}
-	}()
-
-	if err := fn(tx); err != nil {
-		// Keep the caller's (stored) context when still alive so rollback
-		// honors its values; fall back to a fresh Background-backed context
-		// when that lineage is already done.
-		rctx, rcancel := rollbackCtx(c.base(), c.o)
-		rbErr := pgxTx.Rollback(rctx)
-		rcancel()
-		if rbErr != nil {
-			return errors.Join(err, fmt.Errorf("database: rollback: %w", rbErr))
-		}
-		done = true
-		return err
-	}
-
-	mctx, mcancel := timeout(c.base(), c.o.CommandTimeout)
-	comErr := pgxTx.Commit(mctx)
-	mcancel()
-	if comErr != nil {
-		// A failed commit leaves the transaction aborted server-side; still
-		// attempt a rollback to release the connection cleanly. Use a FRESH
-		// Background-backed timeout: the commit usually failed exactly
-		// because its context hit the deadline, making mctx instantly futile.
-		rctx, rcancel := freshRollbackCtx(c.o)
-		rbErr := pgxTx.Rollback(rctx)
-		rcancel()
-		if rbErr != nil {
-			slog.Warn("database: post-commit-failure rollback",
-				"error", errors.Join(comErr, fmt.Errorf("database: rollback: %w", rbErr)))
-		}
-		// The transaction is fully resolved (failed commit + compensation);
-		// keep the deferred rollback out of it.
-		done = true
-		return fmt.Errorf("database: commit: %w", comErr)
-	}
-	done = true
-	return nil
+	return runTransactional(c.beginFn, c.base, c.o, fn)
 }
 
 // ConnQuery maps every row into T on the dedicated connection. No retry.
