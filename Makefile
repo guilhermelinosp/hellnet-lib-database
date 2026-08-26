@@ -1,4 +1,4 @@
-# golang-lib-template — development tasks
+# hellnet-lib-database — development tasks
 GO ?= go
 
 .PHONY: all fmt vet tidy lint test test-race cover build clean
