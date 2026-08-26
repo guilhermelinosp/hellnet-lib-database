@@ -1,4 +1,4 @@
-# Hellnet Database
+# hellnet-lib-database
 
 Biblioteca de infraestrutura de banco de dados PostgreSQL-first para Go. Configuração via environment variables, modular, cloud-native. Porta idiomática de [Hellnet.Database](https://github.com/guilhermelinosp/hellnet-dep-database) (.NET).
 
@@ -12,14 +12,7 @@ Env vars → Options → pgxpool.Pool → *DB / *Conn / Repository[T]
 
 ### A analogia
 
-Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde a turma guarda todas as notas. Escrever nele direto dá trabalho: você precisa saber a página certa, não pode rasurar pela metade e, às vezes, a porta do arquivo onde ele fica trava.
-
-Esta biblioteca é o **estagiário super-confiável** que vai até o caderno por você:
-
-- **sabe o caminho** — endereço, usuário e senha ficam nas variáveis de ambiente;
-- **não perde a página** — ele controla as conexões por você;
-- usa uma **caneta especial que escreve tudo-ou-nada** — quando precisa salvar uma lista (a *transação*), ou escreve a lista inteira, ou não escreve nada;
-- se a porta do arquivo **travar numa tentativa** (erro temporário), ele **tenta de novo sozinho** algumas vezes antes de te avisar (o *retry*).
+Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde a turma guarda todas as notas. Escrever nele direto dá trabalho: você precisa saber a página certa, não pode rasurar pela metade e, às vezes, a porta do arquivo onde ele fica trava. Esta biblioteca é o **estagiário super-confiável** que vai até o caderno por você: **sabe o caminho** (endereço, usuário e senha ficam nas variáveis de ambiente), **não perde a página** (controla as conexões por você), usa uma **caneta especial que escreve tudo-ou-nada** — quando precisa salvar uma lista (a *transação*), ou escreve a lista inteira, ou não escreve nada — e, se a porta do arquivo **travar numa tentativa** (erro temporário), **tenta de novo sozinho** algumas vezes antes de te avisar (o *retry*).
 
 ### O problema que resolve
 
@@ -29,18 +22,20 @@ Esta biblioteca é o **estagiário super-confiável** que vai até o caderno por
 
 ### Mini-dicionário
 
-- **pool** — o estagiário tem várias bicicletas prontas para você não ficar esperando;
-- **conexão dedicada** — pegar UMA bicicleta emprestada e usar ela só sua por um tempo;
-- **transação** — a lista do mercado: paga tudo junto ou não leva nada;
-- **query tipada** — pedir as coisas JÁ organizadas na mochila certa, não num saco solto;
-- **retry** — tropeçou? Levanta e tenta de novo;
-- **DLQ/não-retry** — mistura errada não melhora mexendo mais: alguns erros não adiantam repetir, é preciso parar e consertar.
+| Termo                | Analogia                                                                                               |
+|----------------------|--------------------------------------------------------------------------------------------------------|
+| **pool**             | o estagiário tem várias bicicletas prontas para você não ficar esperando                                |
+| **conexão dedicada** | pegar UMA bicicleta emprestada e usar ela só sua por um tempo                                           |
+| **transação**        | a lista do mercado: paga tudo junto ou não leva nada                                                    |
+| **query tipada**     | pedir as coisas JÁ organizadas na mochila certa, não num saco solto                                     |
+| **retry**            | tropeçou? Levanta e tenta de novo                                                                       |
+| **DLQ/não-retry**    | mistura errada não melhora mexendo mais: alguns erros não adiantam repetir, é preciso parar e consertar |
 
-### Sua primeira linha de código
+### Primeiras linhas
 
 ```go
-ctx := context.Background()
-db, err := database.New(ctx)
+ctx := context.Background()  // cria o crachá do estagiário: de quem é o pedido e até quando vale
+db, err := database.New(ctx) // contrata o estagiário: lê as env vars e abre o caminho até o caderno
 ```
 
 Linha por linha:
