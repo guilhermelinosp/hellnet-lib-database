@@ -8,6 +8,48 @@ Env vars → Options → pgxpool.Pool → *DB / *Conn / Repository[T]
 
 ---
 
+## 🧒 Entenda com 15 anos
+
+### A analogia
+
+Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde a turma guarda todas as notas. Escrever nele direto dá trabalho: você precisa saber a página certa, não pode rasurar pela metade e, às vezes, a porta do arquivo onde ele fica trava.
+
+Esta biblioteca é o **estagiário super-confiável** que vai até o caderno por você:
+
+- **sabe o caminho** — endereço, usuário e senha ficam nas variáveis de ambiente;
+- **não perde a página** — ele controla as conexões por você;
+- usa uma **caneta especial que escreve tudo-ou-nada** — quando precisa salvar uma lista (a *transação*), ou escreve a lista inteira, ou não escreve nada;
+- se a porta do arquivo **travar numa tentativa** (erro temporário), ele **tenta de novo sozinho** algumas vezes antes de te avisar (o *retry*).
+
+### O problema que resolve
+
+- Sem a lib, cada chamada exigiria cuidar de contexto, conexão e detalhes na mão — aqui você configura uma vez e o estagiário faz o resto;
+- **Erros temporários** (a rede piscou, o banco reiniciou) são retentados automaticamente, sem você escrever nada;
+- A transação garante **all-or-nothing**: se algo falhar no meio, nada fica salvo pela metade.
+
+### Mini-dicionário
+
+- **pool** — o estagiário tem várias bicicletas prontas para você não ficar esperando;
+- **conexão dedicada** — pegar UMA bicicleta emprestada e usar ela só sua por um tempo;
+- **transação** — a lista do mercado: paga tudo junto ou não leva nada;
+- **query tipada** — pedir as coisas JÁ organizadas na mochila certa, não num saco solto;
+- **retry** — tropeçou? Levanta e tenta de novo;
+- **DLQ/não-retry** — mistura errada não melhora mexendo mais: alguns erros não adiantam repetir, é preciso parar e consertar.
+
+### Sua primeira linha de código
+
+```go
+ctx := context.Background()
+db, err := database.New(ctx)
+```
+
+Linha por linha:
+
+- `ctx := context.Background()` — cria um **contexto**: pense nele como o crachá do estagiário, que diz de quem é o pedido e até quando ele vale (prazos e cancelamentos). Você cria UMA vez, no início da aplicação;
+- `db, err := database.New(ctx)` — contrata o **estagiário**: ele lê as configurações (variáveis de ambiente), abre o caminho até o caderno e devolve um `db` pronto para usar; o `err` avisa se algo deu errado na contratação.
+
+---
+
 ## Instalação
 
 ```bash
@@ -15,6 +57,8 @@ go get github.com/guilhermelinosp/hellnet-lib-database/database
 ```
 
 ## Configuração
+
+> *Analogia da seção júnior:* configurar é dar ao estagiário o endereço do caderno (host, porta, senha) — sem endereço, ele não chega lá.
 
 ### Via environment variables (recomendado)
 
@@ -103,6 +147,8 @@ O mapeamento segue as convenções do pgx: campos exportados por nome ou tag `db
 
 ### Transações
 
+> *Analogia:* transação = a lista do mercado — paga tudo junto de uma vez, ou não leva nada (nunca metade).
+
 Commit automático. Se a função retorna erro → rollback automático.
 
 ```go
@@ -126,6 +172,8 @@ one, found, err := database.TxQueryRow[Order](tx, "...", args...)
 ```
 
 ### Conexões dedicadas
+
+> *Analogia:* em vez de pegar qualquer bicicleta do pool a cada volta, você pega UMA emprestada e usa ela só sua por um tempo.
 
 Além do pool (que já multiplexa várias conexões automaticamente), a lib expõe
 controle explícito de conexão para três necessidades:
@@ -201,6 +249,8 @@ if err := tx.Commit(); err != nil { return err }
 
 ### Repository Pattern
 
+> *Analogia:* é pedir ao estagiário "traga o pedido 42" — ele já sabe onde está cada ficha no caderno, você não precisa folhear nada.
+
 ```go
 orders := database.NewRepositoryForTable[Order](db, "orders") // tabela explícita
 orders := database.NewRepository[Order](db)                   // ou nome(T), como no .NET typeof(T).Name
@@ -257,6 +307,8 @@ fmt.Println(page.HasNextPage())
 ---
 
 ## Resiliência
+
+> *Analogia:* retry = tropeçou, levanta e tenta de novo; mas mistura errada não melhora mexendo mais (erros permanentes não têm retry).
 
 Retry automático com exponential backoff (`baseDelay << tentativa`). Erros permanentes **não** são retentados:
 
