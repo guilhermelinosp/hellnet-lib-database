@@ -66,3 +66,5 @@ Releases and version bumps are derived from them — see `CONTRIBUTING.md`.
 ## License
 
 [Apache 2.0](LICENSE)
+
+<!-- trigger first release (CI validation) 2026-08-26 -->
