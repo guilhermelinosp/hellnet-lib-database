@@ -46,6 +46,27 @@ func timeout(ctx context.Context, d time.Duration) (context.Context, context.Can
 	return context.WithTimeout(ctx, d)
 }
 
+// freshRollbackCtx derives a context for a COMPENSATING rollback straight from
+// context.Background(), bounded by CommandTimeout. Used where the primary
+// statement just failed — a failed commit very often failed exactly because
+// its context hit the deadline — so reusing that context would make the
+// rollback instantly futile.
+func freshRollbackCtx(o Options) (context.Context, context.CancelFunc) {
+	return timeout(context.Background(), o.CommandTimeout)
+}
+
+// rollbackCtx prefers the caller's construction-time context (keeping its
+// values/deadline lineage) and falls back to a fresh Background-backed
+// context when that lineage is already done (canceled or expired). Used for
+// fn-error rollbacks, where the original work failed for its own reasons and
+// a live caller context is still meaningful.
+func rollbackCtx(base context.Context, o Options) (context.Context, context.CancelFunc) {
+	if base.Err() != nil {
+		return freshRollbackCtx(o)
+	}
+	return timeout(base, o.CommandTimeout)
+}
+
 // track reports slow queries against the SlowQuery diagnostic threshold.
 func track(o Options, start time.Time, sql string) {
 	if o.SlowQuery > 0 && time.Since(start) > o.SlowQuery {
@@ -139,12 +160,13 @@ func (c *conn) Execute(sql string, args ...any) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// retried applies p.Do around fn, unifying the value-carrying retry boilerplate
-// for every typed operation. Cancellation surfaces as the error returned by fn
-// (per-attempt contexts are derived internally from the stored base context).
-func retried[T any](p RetryPolicy, fn func() (T, error)) (T, error) {
+// retried applies p.do around fn, unifying the value-carrying retry boilerplate
+// for every typed operation. The stored base context bounds the backoff sleep:
+// cancellation during it surfaces as the joined ctx error (per-attempt contexts
+// are derived internally from the same stored base context).
+func retried[T any](ctx context.Context, p RetryPolicy, fn func() (T, error)) (T, error) {
 	var out T
-	err := p.Do(func() error {
+	err := p.do(ctx, func() error {
 		var err error
 		out, err = fn()
 		return err
@@ -157,7 +179,7 @@ func retried[T any](p RetryPolicy, fn func() (T, error)) (T, error) {
 // Execute runs a command (INSERT/UPDATE/DELETE/DDL) and returns the number of
 // affected rows. Transient failures are retried when retry is enabled.
 func (db *DB) Execute(sql string, args ...any) (int64, error) {
-	return retried(db.retry, func() (int64, error) {
+	return retried(db.base(), db.retry, func() (int64, error) {
 		return db.conn.Execute(sql, args...)
 	})
 }
@@ -165,7 +187,7 @@ func (db *DB) Execute(sql string, args ...any) (int64, error) {
 // Query runs a SELECT and maps every row into a T. Transient failures are
 // retried when retry is enabled.
 func Query[T any](db *DB, sql string, args ...any) ([]T, error) {
-	return retried(db.retry, func() ([]T, error) {
+	return retried(db.base(), db.retry, func() ([]T, error) {
 		return runQuery[T](&db.conn, sql, args...)
 	})
 }
@@ -176,7 +198,7 @@ func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 	var out T
 	var found bool
 
-	err := db.retry.Do(func() error {
+	err := db.retry.do(db.base(), func() error {
 		v, f, err := runQueryRow[T](&db.conn, sql, args...)
 		out, found = v, f
 		return err
@@ -188,7 +210,7 @@ func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 // Scalar runs a single-value query and scans it into T. Transient failures are
 // retried when retry is enabled.
 func Scalar[T any](db *DB, sql string, args ...any) (T, error) {
-	return retried(db.retry, func() (T, error) {
+	return retried(db.base(), db.retry, func() (T, error) {
 		return runScalar[T](&db.conn, sql, args...)
 	})
 }

@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -68,6 +70,13 @@ func (db *DB) Acquire() (*Conn, error) {
 // Connect is construction-time, so it takes the context that is then captured
 // once on the returned Conn and propagated internally to every later operation.
 func Connect(ctx context.Context, opts Options) (*Conn, error) {
+	// Defensive: degrade instead of panicking on a programming slip — same
+	// construction-time-once approach as New (and hellnet-lib-cache).
+	if ctx == nil {
+		slog.Warn("database: nil context supplied to Connect; using Background")
+		ctx = context.Background()
+	}
+
 	opts = withDefaults(opts)
 	if err := Validate(opts); err != nil {
 		return nil, err
@@ -146,20 +155,30 @@ func (c *Conn) Transactional(fn func(tx *Tx) error) error {
 
 	// done tracks whether fn resolved the transaction. A deferred rollback
 	// releases the connection if fn panics, since a panic would otherwise
-	// unwind past both Commit and the explicit Rollback and leak it.
+	// unwind past both Commit and the explicit Rollback and leak it. It uses a
+	// FRESH timeout: whatever failure caused this path may have expired the
+	// derived contexts, and a swallowed rollback error would leak the conn.
 	done := false
 	defer func() {
 		if !done {
-			_ = pgxTx.Rollback(context.Background())
+			rctx, rcancel := freshRollbackCtx(c.o)
+			defer rcancel()
+			if rbErr := pgxTx.Rollback(rctx); rbErr != nil {
+				slog.Warn("database: deferred rollback after panic",
+					"error", errors.Join(fmt.Errorf("database: rollback: %w", rbErr)))
+			}
 		}
 	}()
 
 	if err := fn(tx); err != nil {
-		rctx, rcancel := timeout(c.base(), c.o.CommandTimeout)
+		// Keep the caller's (stored) context when still alive so rollback
+		// honors its values; fall back to a fresh Background-backed context
+		// when that lineage is already done.
+		rctx, rcancel := rollbackCtx(c.base(), c.o)
 		rbErr := pgxTx.Rollback(rctx)
 		rcancel()
 		if rbErr != nil {
-			return fmt.Errorf("database: rollback: %w", rbErr)
+			return errors.Join(err, fmt.Errorf("database: rollback: %w", rbErr))
 		}
 		done = true
 		return err
@@ -167,11 +186,22 @@ func (c *Conn) Transactional(fn func(tx *Tx) error) error {
 
 	mctx, mcancel := timeout(c.base(), c.o.CommandTimeout)
 	comErr := pgxTx.Commit(mctx)
-	if comErr != nil {
-		_ = pgxTx.Rollback(mctx)
-	}
 	mcancel()
 	if comErr != nil {
+		// A failed commit leaves the transaction aborted server-side; still
+		// attempt a rollback to release the connection cleanly. Use a FRESH
+		// Background-backed timeout: the commit usually failed exactly
+		// because its context hit the deadline, making mctx instantly futile.
+		rctx, rcancel := freshRollbackCtx(c.o)
+		rbErr := pgxTx.Rollback(rctx)
+		rcancel()
+		if rbErr != nil {
+			slog.Warn("database: post-commit-failure rollback",
+				"error", errors.Join(comErr, fmt.Errorf("database: rollback: %w", rbErr)))
+		}
+		// The transaction is fully resolved (failed commit + compensation);
+		// keep the deferred rollback out of it.
+		done = true
 		return fmt.Errorf("database: commit: %w", comErr)
 	}
 	done = true

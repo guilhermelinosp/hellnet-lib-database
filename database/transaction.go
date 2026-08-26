@@ -1,9 +1,9 @@
 package database
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -83,16 +83,26 @@ func (db *DB) Transactional(fn func(tx *Tx) error) error {
 	// done tracks whether fn resolved the transaction (commit or rollback).
 	// A deferred rollback releases the pooled connection if fn panics, since a
 	// panic would otherwise unwind past both Commit and the explicit Rollback
-	// and leak the connection acquired by Begin.
+	// and leak the connection acquired by Begin. It uses a FRESH timeout:
+	// whatever failure caused this path may have expired the derived contexts,
+	// and a swallowed rollback error would leak the pooled connection.
 	done := false
 	defer func() {
 		if !done {
-			_ = pgxconn.Rollback(context.Background())
+			rctx, rcancel := freshRollbackCtx(db.o)
+			defer rcancel()
+			if rbErr := pgxconn.Rollback(rctx); rbErr != nil {
+				slog.Warn("database: deferred rollback after panic",
+					"error", errors.Join(fmt.Errorf("database: rollback: %w", rbErr)))
+			}
 		}
 	}()
 
 	if err := fn(tx); err != nil {
-		rctx, rcancel := timeout(db.base(), db.o.CommandTimeout)
+		// Keep the caller's (stored) context when still alive so rollback
+		// honors its values; fall back to a fresh Background-backed context
+		// when that lineage is already done.
+		rctx, rcancel := rollbackCtx(db.base(), db.o)
 		rbErr := pgxconn.Rollback(rctx)
 		rcancel()
 		if rbErr != nil {
@@ -104,13 +114,22 @@ func (db *DB) Transactional(fn func(tx *Tx) error) error {
 
 	mctx, mcancel := timeout(db.base(), db.o.CommandTimeout)
 	comErr := pgxconn.Commit(mctx)
-	if comErr != nil {
-		// A failed commit leaves the transaction aborted server-side; still
-		// attempt a rollback to release the connection cleanly.
-		_ = pgxconn.Rollback(mctx)
-	}
 	mcancel()
 	if comErr != nil {
+		// A failed commit leaves the transaction aborted server-side; still
+		// attempt a rollback to release the connection cleanly. Use a FRESH
+		// Background-backed timeout: the commit usually failed exactly
+		// because its context hit the deadline, making mctx instantly futile.
+		rctx, rcancel := freshRollbackCtx(db.o)
+		rbErr := pgxconn.Rollback(rctx)
+		rcancel()
+		if rbErr != nil {
+			slog.Warn("database: post-commit-failure rollback",
+				"error", errors.Join(comErr, fmt.Errorf("database: rollback: %w", rbErr)))
+		}
+		// The transaction is fully resolved (failed commit + compensation);
+		// keep the deferred rollback out of it.
+		done = true
 		return fmt.Errorf("database: commit: %w", comErr)
 	}
 	done = true

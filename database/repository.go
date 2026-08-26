@@ -157,18 +157,51 @@ func countSQL(spec Specification) string {
 	return fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS _count", spec.SQL)
 }
 
+// orderByInSQLRe detects an ORDER BY clause already written into spec.SQL.
+// \s+ between the words (SQL requires whitespace) and word boundaries avoid
+// false positives on identifiers like order_by_id or ordering_flag.
+var orderByInSQLRe = regexp.MustCompile(`(?i)\bORDER\s+BY\b`)
+
+// pagingInSQLRe detects paging clauses already written into spec.SQL.
+var pagingInSQLRe = regexp.MustCompile(`(?i)\b(LIMIT|OFFSET|FETCH)\b`)
+
+// clauseCollision returns the offending SQL fragment when sql already carries
+// the given kind of clause (an empty string means no collision).
+func clauseCollision(sql string, re *regexp.Regexp) string {
+	if loc := re.FindStringIndex(sql); loc != nil {
+		return strings.TrimSpace(sql[loc[0]:loc[1]])
+	}
+	return ""
+}
+
 // pageSQL appends ORDER BY / LIMIT / OFFSET to spec.SQL. page is 1-based;
 // pageSize <= 0 means no limit. The ORDER BY value is validated to prevent
-// SQL injection through Specification.OrderBy.
+// SQL injection through Specification.OrderBy. Spec SQL that already embeds
+// the clauses this function would append is rejected up front with a
+// descriptive error — blindly appending produced doubly-ordered or
+// double-limited SQL that only failed later at the server.
 func pageSQL(spec Specification, page, pageSize int) (string, error) {
 	if err := validateOrderBy(spec.OrderBy); err != nil {
 		return "", err
 	}
+
 	sql := spec.SQL
+
+	// Guard only what would actually be appended: a spec carrying its own
+	// ORDER BY/LIMIT and passing no OrderBy/pageSize keeps working untouched
+	// (existing happy-path behavior stays byte-identical).
 	if spec.OrderBy != "" {
+		if frag := clauseCollision(sql, orderByInSQLRe); frag != "" {
+			return "", fmt.Errorf(
+				"database: specification SQL already contains %s; move OrderBy/Pagination into Specification fields", frag)
+		}
 		sql += " ORDER BY " + spec.OrderBy
 	}
 	if pageSize > 0 {
+		if frag := clauseCollision(sql, pagingInSQLRe); frag != "" {
+			return "", fmt.Errorf(
+				"database: specification SQL already contains %s; move OrderBy/Pagination into Specification fields", frag)
+		}
 		offset := (page - 1) * pageSize
 		if offset < 0 {
 			offset = 0
