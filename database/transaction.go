@@ -49,10 +49,22 @@ func (db *DB) Transactional(ctx context.Context, fn func(ctx context.Context, tx
 
 	tx := &Tx{conn: conn{r: pgxconn, o: db.o}}
 
+	// done tracks whether fn resolved the transaction (commit or rollback).
+	// A deferred rollback releases the pooled connection if fn panics, since a
+	// panic would otherwise unwind past both Commit and the explicit Rollback
+	// and leak the connection acquired by Begin.
+	done := false
+	defer func() {
+		if !done {
+			_ = pgxconn.Rollback(context.Background())
+		}
+	}()
+
 	if err := fn(ctx, tx); err != nil {
 		if rbErr := pgxconn.Rollback(ctx); rbErr != nil {
 			return errors.Join(err, fmt.Errorf("database: rollback: %w", rbErr))
 		}
+		done = true
 		return err
 	}
 
@@ -62,6 +74,7 @@ func (db *DB) Transactional(ctx context.Context, fn func(ctx context.Context, tx
 		_ = pgxconn.Rollback(ctx)
 		return fmt.Errorf("database: commit: %w", err)
 	}
+	done = true
 	return nil
 }
 

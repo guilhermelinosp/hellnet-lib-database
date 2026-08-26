@@ -172,9 +172,63 @@ type DB struct {
 	retry RetryPolicy
 }
 
+// withDefaults fills zero-valued fields of opts with DefaultOptions so a caller
+// may pass a partial Options (e.g. the documented explicit-options example)
+// without hitting validation or ending up with zero-duration timeouts.
+func withDefaults(o Options) Options {
+	d := DefaultOptions()
+	if o.Host == "" {
+		o.Host = d.Host
+	}
+	if o.Port == 0 {
+		o.Port = d.Port
+	}
+	if o.Database == "" {
+		o.Database = d.Database
+	}
+	if o.Username == "" {
+		o.Username = d.Username
+	}
+	if o.Password == "" {
+		o.Password = d.Password
+	}
+	if o.PoolMinSize == 0 {
+		o.PoolMinSize = d.PoolMinSize
+	}
+	if o.PoolMaxSize == 0 {
+		o.PoolMaxSize = d.PoolMaxSize
+	}
+	if o.CommandTimeout == 0 {
+		o.CommandTimeout = d.CommandTimeout
+	}
+	if o.ConnectionTimeout == 0 {
+		o.ConnectionTimeout = d.ConnectionTimeout
+	}
+	if o.RetryMaxCount == 0 {
+		o.RetryMaxCount = d.RetryMaxCount
+	}
+	if o.RetryBaseDelay == 0 {
+		o.RetryBaseDelay = d.RetryBaseDelay
+	}
+	defaultRetryEnabled(&o, d)
+	if o.SlowQuery == 0 {
+		o.SlowQuery = d.SlowQuery
+	}
+	return o
+}
+
+// defaultRetryEnabled enables retry unless the caller explicitly disabled it
+// (signalled by leaving the other retry fields at their defaults too).
+func defaultRetryEnabled(o *Options, d Options) {
+	if !o.RetryEnabled && o.RetryMaxCount == d.RetryMaxCount && o.RetryBaseDelay == d.RetryBaseDelay {
+		o.RetryEnabled = d.RetryEnabled
+	}
+}
+
 // New creates a DB from explicit options. No connection is established yet;
 // call Ping to verify connectivity.
 func New(opts Options) (*DB, error) {
+	opts = withDefaults(opts)
 	if err := Validate(opts); err != nil {
 		return nil, err
 	}
