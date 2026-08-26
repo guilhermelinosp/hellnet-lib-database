@@ -50,7 +50,7 @@ func TestDoDisabledRunsOnce(t *testing.T) {
 	p := NewRetryPolicy(false, 5, time.Millisecond)
 
 	calls := 0
-	err := p.Do(context.Background(), func() error {
+	err := p.Do(func() error {
 		calls++
 		return errors.New("permanent for this policy")
 	})
@@ -67,7 +67,7 @@ func TestDoRetriesUntilSuccess(t *testing.T) {
 	p := NewRetryPolicy(true, 5, time.Millisecond)
 
 	calls := 0
-	err := p.Do(context.Background(), func() error {
+	err := p.Do(func() error {
 		calls++
 		if calls < 3 {
 			return pgErr("08006") // connection_failure — transient
@@ -87,7 +87,7 @@ func TestDoGivesUpAfterMaxCount(t *testing.T) {
 	p := NewRetryPolicy(true, 2, time.Millisecond)
 
 	calls := 0
-	_ = p.Do(context.Background(), func() error {
+	_ = p.Do(func() error {
 		calls++
 		return pgErr("08006")
 	})
@@ -102,7 +102,7 @@ func TestDoesNotRetryPermanentErrors(t *testing.T) {
 	p := NewRetryPolicy(true, 5, time.Millisecond)
 
 	calls := 0
-	err := p.Do(context.Background(), func() error {
+	err := p.Do(func() error {
 		calls++
 		return pgErr("23505") // unique_violation — permanent
 	})
@@ -115,18 +115,29 @@ func TestDoesNotRetryPermanentErrors(t *testing.T) {
 	}
 }
 
-func TestDoStopsOnContextCancellation(t *testing.T) {
-	p := NewRetryPolicy(true, 10, 50*time.Millisecond)
+func TestDoesNotRetryCancellationErrors(t *testing.T) {
+	p := NewRetryPolicy(true, 10, time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	calls := 0
-	_ = p.Do(ctx, func() error {
-		calls++
-		cancel() // cancel during backoff
-		return pgErr("08006")
-	})
+	// With context propagated internally, cancellation surfaces as an error
+	// returned by fn — and must never be retried.
+	for _, cerr := range []error{context.Canceled, context.DeadlineExceeded} {
+		calls := 0
+		err := p.Do(func() error {
+			calls++
+			return cerr
+		})
+		if calls != 1 || !errors.Is(err, cerr) {
+			t.Errorf("%v: calls=%d err=%v, want 1 call returning the ctx error", cerr, calls, err)
+		}
+	}
+}
 
-	if calls != 1 {
-		t.Errorf("calls = %d, want 1 (cancelled during backoff)", calls)
+func TestSleepBackoff(t *testing.T) {
+	p := NewRetryPolicy(true, 2, time.Millisecond)
+
+	start := time.Now()
+	p.sleep(2) // baseDelay << 2 = 4ms
+	if elapsed := time.Since(start); elapsed < 4*time.Millisecond {
+		t.Errorf("sleep(2) returned after %s, want >= 4ms", elapsed)
 	}
 }

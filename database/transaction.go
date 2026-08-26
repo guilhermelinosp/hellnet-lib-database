@@ -20,34 +20,65 @@ type Tx struct {
 }
 
 // TxQuery maps every row into T. Rows see the transaction's uncommitted state.
-func TxQuery[T any](ctx context.Context, tx *Tx, sql string, args ...any) ([]T, error) {
-	return runQuery[T](ctx, &tx.conn, sql, args...)
+func TxQuery[T any](tx *Tx, sql string, args ...any) ([]T, error) {
+	return runQuery[T](&tx.conn, sql, args...)
 }
 
 // TxQueryRow runs a query expected to return at most one row inside the
 // transaction.
-func TxQueryRow[T any](ctx context.Context, tx *Tx, sql string, args ...any) (T, bool, error) {
-	return runQueryRow[T](ctx, &tx.conn, sql, args...)
+func TxQueryRow[T any](tx *Tx, sql string, args ...any) (T, bool, error) {
+	return runQueryRow[T](&tx.conn, sql, args...)
 }
 
 // TxScalar scans a single-value result inside the transaction.
-func TxScalar[T any](ctx context.Context, tx *Tx, sql string, args ...any) (T, error) {
-	return runScalar[T](ctx, &tx.conn, sql, args...)
+func TxScalar[T any](tx *Tx, sql string, args ...any) (T, error) {
+	return runScalar[T](&tx.conn, sql, args...)
+}
+
+// Commit commits the transaction. Use it only for transactions started via
+// Conn.Begin, which the caller drives manually. Transactions managed by
+// DB.Transactional / Conn.Transactional commit automatically and must NOT call
+// this method. The context captured once at construction is used internally,
+// bounded by CommandTimeout.
+func (tx *Tx) Commit() error {
+	pgxTx, ok := tx.r.(pgx.Tx)
+	if !ok {
+		return fmt.Errorf("database: connection does not support commit")
+	}
+	cctx, cancel := timeout(tx.base(), tx.o.CommandTimeout)
+	defer cancel()
+	return pgxTx.Commit(cctx)
+}
+
+// Rollback aborts the transaction. Use it only for transactions started via
+// Conn.Begin; see Commit for the ownership rules. The context captured once at
+// construction is used internally, bounded by CommandTimeout.
+func (tx *Tx) Rollback() error {
+	pgxTx, ok := tx.r.(pgx.Tx)
+	if !ok {
+		return fmt.Errorf("database: connection does not support rollback")
+	}
+	cctx, cancel := timeout(tx.base(), tx.o.CommandTimeout)
+	defer cancel()
+	return pgxTx.Rollback(cctx)
 }
 
 // Transactional runs fn atomically: fn's operations share one connection and
 // commit together. If fn returns an error the transaction is rolled back and
 // the error is returned; a rollback failure is joined into the returned error.
-// This mirrors the .NET IDatabaseTransaction.ExecuteAsync contract.
-func (db *DB) Transactional(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) error {
-	cctx, cancel := timeout(ctx, db.o.ConnectionTimeout)
+// The context captured once at New is propagated internally to begin, fn's
+// statements, commit and rollback (CommandTimeout bounds the terminal
+// statements, ConnectionTimeout bounds Begin). This mirrors the .NET
+// IDatabaseTransaction.ExecuteAsync contract.
+func (db *DB) Transactional(fn func(tx *Tx) error) error {
+	cctx, cancel := timeout(db.base(), db.o.ConnectionTimeout)
 	pgxconn, err := db.pool.Begin(cctx)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("database: begin transaction: %w", err)
 	}
 
-	tx := &Tx{conn: conn{r: pgxconn, o: db.o}}
+	tx := &Tx{conn: conn{r: pgxconn, o: db.o, ctx: db.ctx}}
 
 	// done tracks whether fn resolved the transaction (commit or rollback).
 	// A deferred rollback releases the pooled connection if fn panics, since a
@@ -60,19 +91,27 @@ func (db *DB) Transactional(ctx context.Context, fn func(ctx context.Context, tx
 		}
 	}()
 
-	if err := fn(ctx, tx); err != nil {
-		if rbErr := pgxconn.Rollback(ctx); rbErr != nil {
+	if err := fn(tx); err != nil {
+		rctx, rcancel := timeout(db.base(), db.o.CommandTimeout)
+		rbErr := pgxconn.Rollback(rctx)
+		rcancel()
+		if rbErr != nil {
 			return errors.Join(err, fmt.Errorf("database: rollback: %w", rbErr))
 		}
 		done = true
 		return err
 	}
 
-	if err := pgxconn.Commit(ctx); err != nil {
+	mctx, mcancel := timeout(db.base(), db.o.CommandTimeout)
+	comErr := pgxconn.Commit(mctx)
+	if comErr != nil {
 		// A failed commit leaves the transaction aborted server-side; still
 		// attempt a rollback to release the connection cleanly.
-		_ = pgxconn.Rollback(ctx)
-		return fmt.Errorf("database: commit: %w", err)
+		_ = pgxconn.Rollback(mctx)
+	}
+	mcancel()
+	if comErr != nil {
+		return fmt.Errorf("database: commit: %w", comErr)
 	}
 	done = true
 	return nil

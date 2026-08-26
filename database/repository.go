@@ -1,7 +1,6 @@
 package database
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -180,38 +179,38 @@ func pageSQL(spec Specification, page, pageSize int) (string, error) {
 }
 
 // GetByID fetches the row with the given primary key, or (zero, false, nil)
-// when it does not exist.
-func (r *Repository[T]) GetByID(ctx context.Context, id any) (T, bool, error) {
+// when it does not exist. The context captured once at New is used internally.
+func (r *Repository[T]) GetByID(id any) (T, bool, error) {
 	var zero T
 	sql, err := selectAllSQL(r.table, columnsOf[T](), true)
 	if err != nil {
 		return zero, false, err
 	}
-	return QueryRow[T](ctx, r.db, sql, id)
+	return QueryRow[T](r.db, sql, id)
 }
 
 // GetAll fetches the mapped columns of every row in the table.
-func (r *Repository[T]) GetAll(ctx context.Context) ([]T, error) {
+func (r *Repository[T]) GetAll() ([]T, error) {
 	sql, err := selectAllSQL(r.table, columnsOf[T](), false)
 	if err != nil {
 		return nil, err
 	}
-	return Query[T](ctx, r.db, sql)
+	return Query[T](r.db, sql)
 }
 
 // Find executes the specification's query.
-func (r *Repository[T]) Find(ctx context.Context, spec Specification) ([]T, error) {
+func (r *Repository[T]) Find(spec Specification) ([]T, error) {
 	sql, err := pageSQL(spec, 1, 0)
 	if err != nil {
 		return nil, err
 	}
-	return Query[T](ctx, r.db, sql, spec.Args...)
+	return Query[T](r.db, sql, spec.Args...)
 }
 
 // Paginate executes the specification returning one page (1-based) plus the
 // total row count.
-func (r *Repository[T]) Paginate(ctx context.Context, spec Specification, page, pageSize int) (PageResult[T], error) {
-	total, err := Scalar[int64](ctx, r.db, countSQL(spec), spec.Args...)
+func (r *Repository[T]) Paginate(spec Specification, page, pageSize int) (PageResult[T], error) {
+	total, err := Scalar[int64](r.db, countSQL(spec), spec.Args...)
 	if err != nil {
 		return PageResult[T]{}, err
 	}
@@ -221,7 +220,7 @@ func (r *Repository[T]) Paginate(ctx context.Context, spec Specification, page, 
 		return PageResult[T]{}, err
 	}
 
-	items, err := Query[T](ctx, r.db, sql, spec.Args...)
+	items, err := Query[T](r.db, sql, spec.Args...)
 	if err != nil {
 		return PageResult[T]{}, err
 	}
@@ -235,6 +234,6 @@ func (r *Repository[T]) Paginate(ctx context.Context, spec Specification, page, 
 }
 
 // Count counts the rows matching the specification.
-func (r *Repository[T]) Count(ctx context.Context, spec Specification) (int64, error) {
-	return Scalar[int64](ctx, r.db, countSQL(spec), spec.Args...)
+func (r *Repository[T]) Count(spec Specification) (int64, error) {
+	return Scalar[int64](r.db, countSQL(spec), spec.Args...)
 }

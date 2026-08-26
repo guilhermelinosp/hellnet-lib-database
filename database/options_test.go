@@ -1,6 +1,7 @@
 package database
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -61,6 +62,28 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if o.CommandTimeout != 7*time.Second {
 		t.Errorf("CommandTimeout = %s, want 7s", o.CommandTimeout)
+	}
+}
+
+// TestLoadFromEnvLoadsDotEnv ensures env-first is self-contained: LoadFromEnv
+// loads a .env file pointed by HELLNET_DATABASE_ENV_FILE without the caller
+// having to call any external DotEnv loader. Mirrors the other Hellnet libs.
+func TestLoadFromEnvLoadsDotEnv(t *testing.T) {
+	f := t.TempDir() + "/db.env"
+	if err := os.WriteFile(f, []byte("HELLNET_DATABASE_NAME=fromdotenv\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HELLNET_DATABASE_ENV_FILE", f)
+	// The loaded var must not leak into other tests.
+	defer os.Unsetenv("HELLNET_DATABASE_NAME")
+
+	o := LoadFromEnv()
+	if o.Database != "fromdotenv" {
+		t.Errorf("LoadFromEnv did not load .env: Database=%q, want fromdotenv", o.Database)
+	}
+	// Default fallback still applies for vars not present in the file.
+	if o.Host != "localhost" {
+		t.Errorf("default Host not applied: %q, want localhost", o.Host)
 	}
 }
 
