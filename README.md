@@ -222,4 +222,4 @@ Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx
 
 ## Licença
 
-Apache 2.0 © 2026 Hellnet
+[Apache 2.0](LICENSE)
