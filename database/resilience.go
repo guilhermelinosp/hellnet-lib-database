@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -72,16 +73,32 @@ func (p RetryPolicy) shouldRetry(err error, attempt int) bool {
 }
 
 // sleep waits for the exponential backoff delay after attempt (0-based):
-// baseDelay << attempt. It is a plain timer: cancellation surfaces as an error
-// returned by fn (per-attempt contexts are derived internally from the stored
-// base context), so no context is needed here.
-func (p RetryPolicy) sleep(attempt int) {
-	time.Sleep(p.baseDelay << attempt)
+// baseDelay << attempt. It observes ctx cancellation so a canceled caller does
+// not wait out the full backoff (pattern shared with hellnet-lib-kafka's
+// dlq.go), returning ctx.Err() when the wait is interrupted.
+func (p RetryPolicy) sleep(ctx context.Context, attempt int) error {
+	t := time.NewTimer(p.baseDelay << attempt)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // Do runs fn retrying transient failures up to maxCount times with exponential
-// backoff. A disabled policy runs fn once.
+// backoff. A disabled policy runs fn once. The backoff sleep is bounded by
+// context.Background() — callers holding the library-captured base context go
+// through do instead.
 func (p RetryPolicy) Do(fn func() error) error {
+	return p.do(context.Background(), fn)
+}
+
+// do is Do with the library-owned base context: backoff sleeps are interruptible,
+// and cancellation during them returns the last operation error joined with
+// ctx.Err() so neither failure mode is silently swallowed.
+func (p RetryPolicy) do(ctx context.Context, fn func() error) error {
 	if !p.enabled {
 		return fn()
 	}
@@ -97,6 +114,8 @@ func (p RetryPolicy) Do(fn func() error) error {
 		}
 		slog.Warn("database: transient error, retrying",
 			"attempt", attempt+2, "max", p.maxCount+1, "error", err)
-		p.sleep(attempt)
+		if sleepErr := p.sleep(ctx, attempt); sleepErr != nil {
+			return errors.Join(err, fmt.Errorf("database: retry aborted: %w", sleepErr))
+		}
 	}
 }

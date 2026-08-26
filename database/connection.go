@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -68,6 +69,13 @@ func (db *DB) Acquire() (*Conn, error) {
 // Connect is construction-time, so it takes the context that is then captured
 // once on the returned Conn and propagated internally to every later operation.
 func Connect(ctx context.Context, opts Options) (*Conn, error) {
+	// Defensive: degrade instead of panicking on a programming slip — same
+	// construction-time-once approach as New (and hellnet-lib-cache).
+	if ctx == nil {
+		slog.Warn("database: nil context supplied to Connect; using Background")
+		ctx = context.Background()
+	}
+
 	opts = withDefaults(opts)
 	if err := Validate(opts); err != nil {
 		return nil, err
@@ -135,47 +143,7 @@ func (c *Conn) Begin() (*Tx, error) {
 // fn's statements, commit and rollback. The Conn itself stays open after the
 // call — call Close when finished with it.
 func (c *Conn) Transactional(fn func(tx *Tx) error) error {
-	cctx, cancel := timeout(c.base(), c.o.ConnectionTimeout)
-	pgxTx, err := c.beginFn(cctx)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("database: begin transaction: %w", err)
-	}
-
-	tx := &Tx{conn: conn{r: pgxTx, o: c.o, ctx: c.ctx}}
-
-	// done tracks whether fn resolved the transaction. A deferred rollback
-	// releases the connection if fn panics, since a panic would otherwise
-	// unwind past both Commit and the explicit Rollback and leak it.
-	done := false
-	defer func() {
-		if !done {
-			_ = pgxTx.Rollback(context.Background())
-		}
-	}()
-
-	if err := fn(tx); err != nil {
-		rctx, rcancel := timeout(c.base(), c.o.CommandTimeout)
-		rbErr := pgxTx.Rollback(rctx)
-		rcancel()
-		if rbErr != nil {
-			return fmt.Errorf("database: rollback: %w", rbErr)
-		}
-		done = true
-		return err
-	}
-
-	mctx, mcancel := timeout(c.base(), c.o.CommandTimeout)
-	comErr := pgxTx.Commit(mctx)
-	if comErr != nil {
-		_ = pgxTx.Rollback(mctx)
-	}
-	mcancel()
-	if comErr != nil {
-		return fmt.Errorf("database: commit: %w", comErr)
-	}
-	done = true
-	return nil
+	return runTransactional(c.beginFn, c.base, c.o, fn)
 }
 
 // ConnQuery maps every row into T on the dedicated connection. No retry.

@@ -18,6 +18,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"reflect"
@@ -251,6 +252,14 @@ func defaultRetryEnabled(o *Options, d Options) {
 // methods do not take a context.Context. No connection is established yet;
 // call Ping to verify.
 func New(ctx context.Context, opts ...Options) (*DB, error) {
+	// Defensive: documented as required, but degrade instead of panicking on a
+	// programming slip during startup. Warned ONCE here at construction —
+	// never per operation (same approach as hellnet-lib-cache).
+	if ctx == nil {
+		slog.Warn("database: nil context supplied to New; using Background")
+		ctx = context.Background()
+	}
+
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]

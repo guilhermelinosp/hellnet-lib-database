@@ -2,6 +2,7 @@ package database
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,6 +57,63 @@ func TestCountAndPageSQL(t *testing.T) {
 	sql, err = pageSQL(ordered, 1, 10)
 	if err != nil || sql != "SELECT * FROM products ORDER BY name DESC LIMIT 10 OFFSET 0" {
 		t.Errorf("pageSQL(ordered) = %q err=%v", sql, err)
+	}
+}
+
+// TestPageSQLRejectsClauseCollision pins the I5 guard: spec SQL that already
+// carries ORDER BY / LIMIT / OFFSET / FETCH must fail fast with a descriptive
+// error instead of producing doubly-ordered or double-limited SQL. The guard
+// is case-insensitive and only fires when the colliding clause would actually
+// be appended (specs that fully own their SQL keep working byte-identically).
+func TestPageSQLRejectsClauseCollision(t *testing.T) {
+	collisionCases := []struct {
+		name, sql string
+		paged     bool // true → collision surfaces with OrderBy empty too
+	}{
+		{"upper order by", "SELECT * FROM orders ORDER BY id", false},
+		{"lowercase order by", "SELECT * FROM orders order by created_at", false},
+		{"newline-separated order by", "SELECT * FROM orders\nORDER\nBY id", false},
+		{"lowercase limit", "SELECT * FROM orders WHERE status = $1 limit 10", true},
+		{"upper limit", "SELECT * FROM orders LIMIT 25", true},
+		{"offset lowercase", "SELECT * FROM events offset 20", true},
+		{"fetch first", "SELECT * FROM events FETCH FIRST 10 ROWS ONLY", true},
+	}
+	for _, tc := range collisionCases {
+		spec := Specification{SQL: tc.sql}
+		if !tc.paged {
+			spec.OrderBy = "id DESC"
+		}
+
+		_, err := pageSQL(spec, 1, 10)
+		if err == nil {
+			t.Errorf("%s: pageSQL accepted %q without error", tc.name, tc.sql)
+			continue
+		}
+		if !strings.Contains(err.Error(), "already contains") ||
+			!strings.Contains(err.Error(), "move OrderBy/Pagination into Specification fields") {
+			t.Errorf("%s: err = %v, want descriptive clause-collision guidance", tc.name, err)
+		}
+
+		// Same spec untouched by ordering/paging goes through unchanged.
+		passThrough, err := pageSQL(Specification{SQL: tc.sql}, 1, 0)
+		if err != nil || passThrough != tc.sql {
+			t.Errorf("%s: pass-through pageSQL = %q err=%v, want the original SQL", tc.name, passThrough, err)
+		}
+	}
+
+	// No false positives on identifiers merely containing clause words.
+	spec := Specification{SQL: "SELECT limit_flag, offset_amount, ordering_hint FROM t"}
+	got, err := pageSQL(spec, 1, 5)
+	if err != nil || got != spec.SQL+" LIMIT 5 OFFSET 0" {
+		t.Errorf("pageSQL(identifier lookalikes) = %q err=%v — word-boundary guard overmatched", got, err)
+	}
+
+	// A spec embedding its own ORDER BY but paginating via fields stays valid:
+	// only LIMIT/OFFSET/FETCH would be appended to it.
+	ownedOrder := Specification{SQL: "SELECT * FROM orders ORDER BY id"}
+	got, err = pageSQL(ownedOrder, 2, 3)
+	if err != nil || got != ownedOrder.SQL+" LIMIT 3 OFFSET 3" {
+		t.Errorf("pageSQL(embedded own order) = %q err=%v", got, err)
 	}
 }
 

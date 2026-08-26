@@ -132,11 +132,61 @@ func TestDoesNotRetryCancellationErrors(t *testing.T) {
 	}
 }
 
+// TestDoAbortsBackoffWhenBaseContextCanceled pins the I2 contract: while the
+// policy sleeps between attempts, base-context cancellation interrupts the
+// backoff instead of waiting it out, and the result carries BOTH the last
+// operation error and the ctx error (errors.Join).
+func TestDoAbortsBackoffWhenBaseContextCanceled(t *testing.T) {
+	p := NewRetryPolicy(true, 5, 200*time.Millisecond) // first backoff would cost 200ms
+
+	opErr := pgErr("08006") // connection_failure — transient, keeps retrying
+	cctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	calls := 0
+	err := p.do(cctx, func() error {
+		calls++
+		return opErr
+	})
+
+	cancel()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (cancellation must interrupt the first backoff)", calls)
+	}
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, opErr) {
+		t.Errorf("err = %v, want joined op error + context.Canceled", err)
+	}
+}
+
+func TestSleepInterruptedByContextCancellation(t *testing.T) {
+	p := NewRetryPolicy(true, 2, 30*time.Second)
+
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- p.sleep(cctx, 0) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("sleep err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sleep ignored an already-cancelled context")
+	}
+}
+
 func TestSleepBackoff(t *testing.T) {
 	p := NewRetryPolicy(true, 2, time.Millisecond)
 
 	start := time.Now()
-	p.sleep(2) // baseDelay << 2 = 4ms
+	if err := p.sleep(context.Background(), 2); err != nil { // baseDelay << 2 = 4ms
+		t.Fatalf("sleep(2) err = %v, want nil", err)
+	}
 	if elapsed := time.Since(start); elapsed < 4*time.Millisecond {
 		t.Errorf("sleep(2) returned after %s, want >= 4ms", elapsed)
 	}

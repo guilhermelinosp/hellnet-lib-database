@@ -6,7 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -283,6 +286,145 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// ── I6: real-transient retry & slow-query logging ────────────────
+
+// TestIntegrationTransientRetryReal proves db.Execute actually retries a REAL
+// transient failure raised by PostgreSQL: an uncommitted transaction on a
+// second standalone connection holds the row lock, so `FOR UPDATE NOWAIT`
+// fails immediately with SQLSTATE 55006 ("could not obtain lock on row",
+// class 55 — same lock-family as 55P03) which is NOT on the non-retryable
+// list. The holder commits after 300ms; with backoff 50ms and max-count 6 the
+// contended attempts fail fast while ~attempt 4 lands after release and
+// succeeds, so the slow overall elapsed time is itself evidence that retries
+// happened (a single shot would fail in ~10ms).
+func TestIntegrationTransientRetryReal(t *testing.T) {
+	opts := integrationOptions(t)
+	opts.RetryEnabled = true
+	opts.RetryMaxCount = 6
+	opts.RetryBaseDelay = 50 * time.Millisecond
+
+	ctx := context.Background()
+	db, err := New(ctx, opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Ping(); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	for _, ddl := range []string{
+		`DROP TABLE IF EXISTS lock_retry_test`,
+		`CREATE TABLE lock_retry_test (id INT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending')`,
+		`INSERT INTO lock_retry_test (id) VALUES (1)`,
+	} {
+		if _, err := db.Execute(ddl); err != nil {
+			t.Fatalf("ddl %q: %v", ddl, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = db.Execute("DROP TABLE IF EXISTS lock_retry_test") })
+
+	// Second physical connection: hold the row lock in an open transaction.
+	holder, err := Connect(ctx, opts)
+	if err != nil {
+		t.Fatalf("Connect(holder): %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	htx, err := holder.Begin()
+	if err != nil {
+		t.Fatalf("holder Begin: %v", err)
+	}
+	if _, err := htx.Execute("UPDATE lock_retry_test SET status = 'held' WHERE id = 1"); err != nil {
+		htx.Rollback() //nolint:errcheck // best-effort cleanup
+		t.Fatalf("holder row lock: %v", err)
+	}
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = htx.Commit() // frees the row lock for subsequent retry attempts
+		close(released)
+	}()
+
+	start := time.Now()
+	_, err = db.Execute("SELECT status FROM lock_retry_test WHERE id = 1 FOR UPDATE NOWAIT")
+	elapsed := time.Since(start)
+
+	<-released // join the commit before cleanup closes the holder conn
+
+	if err != nil {
+		var pgErr *pgconn.PgError
+		t.Fatalf("db.Execute with retries = %v (asPgError=%v) after %s, want success once the lock was released",
+			err, errors.As(err, &pgErr), elapsed)
+	}
+	// A single non-retried attempt hits the lock error instantly (<~10ms).
+	// Only genuine retrying pushes total elapsed beyond the 300ms release.
+	if elapsed < 250*time.Millisecond {
+		t.Fatalf("execute returned in %s — looks like NO retry happened for the row-lock error", elapsed)
+	}
+}
+
+// capturingHandler collects warn records so tests can assert logging without
+// touching global output configuration beyond slog.SetDefault.
+type capturingHandler struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r.Level == slog.LevelWarn {
+		h.msgs = append(h.msgs, r.Message)
+	}
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *capturingHandler) countContaining(sub string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, m := range h.msgs {
+		if strings.Contains(m, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestIntegrationSlowQueryLogCapture pins the diagnostic contract: statements
+// slower than Options.SlowQuery are logged at WARN level with the stable
+// "database: slow query" message.
+func TestIntegrationSlowQueryLogCapture(t *testing.T) {
+	opts := integrationOptions(t)
+	opts.SlowQuery = 1 * time.Millisecond
+
+	capture := &capturingHandler{}
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(capture))
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+
+	db, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Execute("SELECT pg_sleep(0.05)"); err != nil {
+		t.Fatalf("pg_sleep execute: %v", err)
+	}
+
+	if n := capture.countContaining("slow query"); n < 1 {
+		t.Fatalf("got %d warn records containing %q (msgs=%v), want >= 1",
+			n, "slow query", capture.msgs)
+	}
 }
 
 // ── Dedicated connections: Acquire / Connect / Begin ─────────────
