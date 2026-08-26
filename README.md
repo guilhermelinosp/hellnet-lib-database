@@ -220,6 +220,24 @@ Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx
 
 ---
 
+## Testes
+
+```bash
+make test           # unitários (sem dependências externas)
+make test-race      # unitários com race detector
+
+# Integração contra um PostgreSQL real (build tag `integration`):
+export HELLNET_TEST_PG_HOST=localhost HELLNET_TEST_PG_PORT=5432 \
+       HELLNET_TEST_PG_USER=postgres HELLNET_TEST_PG_NAME=postgres \
+       HELLNET_TEST_PG_PASSWORD=<senha>
+go test -tags integration -race ./database/
+```
+
+No CI, o workflow `integration` sobe um container `postgres:16` e roda esses
+mesmos testes automaticamente a cada PR.
+
+---
+
 ## Licença
 
 [Apache 2.0](LICENSE)
