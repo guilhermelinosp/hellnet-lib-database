@@ -1,0 +1,132 @@
+package database
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+func pgErr(code string) *pgconn.PgError {
+	return &pgconn.PgError{Code: code, Message: "pg error " + code}
+}
+
+func TestIsTransientPermanentStates(t *testing.T) {
+	p := NewRetryPolicy(true, 3, time.Millisecond)
+
+	for code, name := range nonTransientSQLStates {
+		if p.IsTransient(pgErr(code)) {
+			t.Errorf("SQLSTATE %s (%s) classified as transient, want permanent", code, name)
+		}
+	}
+}
+
+func TestIsTransient(t *testing.T) {
+	p := NewRetryPolicy(true, 3, time.Millisecond)
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"generic error", errors.New("boom"), true},
+		{"transient pg error", pgErr("53300"), true}, // too_many_connections
+		{"context canceled", context.Canceled, false},
+		{"deadline exceeded", context.DeadlineExceeded, false},
+		{"wrapped canceled", errors.Join(errors.New("x"), context.Canceled), false},
+	}
+
+	for _, tc := range tests {
+		if got := p.IsTransient(tc.err); got != tc.want {
+			t.Errorf("%s: IsTransient = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestDoDisabledRunsOnce(t *testing.T) {
+	p := NewRetryPolicy(false, 5, time.Millisecond)
+
+	calls := 0
+	err := p.Do(context.Background(), func() error {
+		calls++
+		return errors.New("permanent for this policy")
+	})
+
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+	if err == nil {
+		t.Error("Do returned nil, want the fn error")
+	}
+}
+
+func TestDoRetriesUntilSuccess(t *testing.T) {
+	p := NewRetryPolicy(true, 5, time.Millisecond)
+
+	calls := 0
+	err := p.Do(context.Background(), func() error {
+		calls++
+		if calls < 3 {
+			return pgErr("08006") // connection_failure — transient
+		}
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("Do = %v, want nil", err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+func TestDoGivesUpAfterMaxCount(t *testing.T) {
+	p := NewRetryPolicy(true, 2, time.Millisecond)
+
+	calls := 0
+	_ = p.Do(context.Background(), func() error {
+		calls++
+		return pgErr("08006")
+	})
+
+	// 1 initial attempt + maxCount retries.
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+func TestDoesNotRetryPermanentErrors(t *testing.T) {
+	p := NewRetryPolicy(true, 5, time.Millisecond)
+
+	calls := 0
+	err := p.Do(context.Background(), func() error {
+		calls++
+		return pgErr("23505") // unique_violation — permanent
+	})
+
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (no retry for unique violations)", calls)
+	}
+	if err == nil {
+		t.Error("err = nil, want the pg error")
+	}
+}
+
+func TestDoStopsOnContextCancellation(t *testing.T) {
+	p := NewRetryPolicy(true, 10, 50*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	_ = p.Do(ctx, func() error {
+		calls++
+		cancel() // cancel during backoff
+		return pgErr("08006")
+	})
+
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (cancelled during backoff)", calls)
+	}
+}
