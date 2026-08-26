@@ -108,6 +108,25 @@ func TestTableOf(t *testing.T) {
 	}
 }
 
+func TestWithDefaults(t *testing.T) {
+	o := withDefaults(Options{})
+	if o.PoolMaxSize != 100 || o.CommandTimeout != 30*time.Second || o.PoolMinSize != 10 || !o.RetryEnabled {
+		t.Errorf("empty Options not defaulted: %+v", o)
+	}
+
+	// Explicit values are preserved.
+	o = withDefaults(Options{PoolMaxSize: 5, CommandTimeout: time.Second})
+	if o.PoolMaxSize != 5 || o.CommandTimeout != time.Second || o.PoolMinSize != 10 {
+		t.Errorf("override not preserved: %+v", o)
+	}
+
+	// Explicit retry disable with custom counts is respected.
+	o = withDefaults(Options{RetryEnabled: false, RetryMaxCount: 5})
+	if o.RetryEnabled {
+		t.Error("explicit RetryEnabled=false was overridden by defaults")
+	}
+}
+
 // contains is a tiny helper avoiding strings import noise in tests.
 func contains(s, sub string) bool {
 	return len(sub) == 0 || len(s) >= len(sub) && indexOf(s, sub) >= 0

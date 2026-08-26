@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,13 +107,50 @@ func snakeCase(s string) string {
 	return b.String()
 }
 
+// identRe matches a safe SQL identifier (table or column name).
+var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// orderByRe matches a safe ORDER BY expression: column names, dots,
+// commas and whitespace only.
+var orderByRe = regexp.MustCompile(`^[A-Za-z0-9_.,\s]+$`)
+
+// validateIdentifier rejects table names that are not plain identifiers,
+// preventing SQL injection through NewRepositoryForTable / type-derived names.
+func validateIdentifier(name string) error {
+	if !identRe.MatchString(name) {
+		return fmt.Errorf("database: invalid identifier %q", name)
+	}
+	return nil
+}
+
+// validateOrderBy rejects ORDER BY clauses containing injection tokens or
+// characters outside the safe charset.
+func validateOrderBy(s string) error {
+	if s == "" {
+		return nil
+	}
+	if strings.ContainsAny(s, ";") ||
+		strings.Contains(s, "--") ||
+		strings.Contains(s, "/*") ||
+		strings.Contains(s, "*/") {
+		return fmt.Errorf("database: invalid ORDER BY clause %q", s)
+	}
+	if !orderByRe.MatchString(s) {
+		return fmt.Errorf("database: invalid ORDER BY clause %q", s)
+	}
+	return nil
+}
+
 // selectAllSQL builds "SELECT <columns> FROM <table> [WHERE id = $1]".
-func selectAllSQL(table, cols string, byID bool) string {
+func selectAllSQL(table, cols string, byID bool) (string, error) {
+	if err := validateIdentifier(table); err != nil {
+		return "", err
+	}
 	sql := fmt.Sprintf("SELECT %s FROM %s", cols, table)
 	if byID {
 		sql += " WHERE id = $1"
 	}
-	return sql
+	return sql, nil
 }
 
 // countSQL wraps spec.SQL into a COUNT subquery.
@@ -121,8 +159,12 @@ func countSQL(spec Specification) string {
 }
 
 // pageSQL appends ORDER BY / LIMIT / OFFSET to spec.SQL. page is 1-based;
-// pageSize <= 0 means no limit.
-func pageSQL(spec Specification, page, pageSize int) string {
+// pageSize <= 0 means no limit. The ORDER BY value is validated to prevent
+// SQL injection through Specification.OrderBy.
+func pageSQL(spec Specification, page, pageSize int) (string, error) {
+	if err := validateOrderBy(spec.OrderBy); err != nil {
+		return "", err
+	}
 	sql := spec.SQL
 	if spec.OrderBy != "" {
 		sql += " ORDER BY " + spec.OrderBy
@@ -134,23 +176,36 @@ func pageSQL(spec Specification, page, pageSize int) string {
 		}
 		sql += fmt.Sprintf(" LIMIT %d OFFSET %d", pageSize, offset)
 	}
-	return sql
+	return sql, nil
 }
 
 // GetByID fetches the row with the given primary key, or (zero, false, nil)
 // when it does not exist.
 func (r *Repository[T]) GetByID(ctx context.Context, id any) (T, bool, error) {
-	return QueryRow[T](ctx, r.db, selectAllSQL(r.table, columnsOf[T](), true), id)
+	var zero T
+	sql, err := selectAllSQL(r.table, columnsOf[T](), true)
+	if err != nil {
+		return zero, false, err
+	}
+	return QueryRow[T](ctx, r.db, sql, id)
 }
 
 // GetAll fetches the mapped columns of every row in the table.
 func (r *Repository[T]) GetAll(ctx context.Context) ([]T, error) {
-	return Query[T](ctx, r.db, selectAllSQL(r.table, columnsOf[T](), false))
+	sql, err := selectAllSQL(r.table, columnsOf[T](), false)
+	if err != nil {
+		return nil, err
+	}
+	return Query[T](ctx, r.db, sql)
 }
 
 // Find executes the specification's query.
 func (r *Repository[T]) Find(ctx context.Context, spec Specification) ([]T, error) {
-	return Query[T](ctx, r.db, pageSQL(spec, 1, 0), spec.Args...)
+	sql, err := pageSQL(spec, 1, 0)
+	if err != nil {
+		return nil, err
+	}
+	return Query[T](ctx, r.db, sql, spec.Args...)
 }
 
 // Paginate executes the specification returning one page (1-based) plus the
@@ -161,7 +216,12 @@ func (r *Repository[T]) Paginate(ctx context.Context, spec Specification, page, 
 		return PageResult[T]{}, err
 	}
 
-	items, err := Query[T](ctx, r.db, pageSQL(spec, page, pageSize), spec.Args...)
+	sql, err := pageSQL(spec, page, pageSize)
+	if err != nil {
+		return PageResult[T]{}, err
+	}
+
+	items, err := Query[T](ctx, r.db, sql, spec.Args...)
 	if err != nil {
 		return PageResult[T]{}, err
 	}

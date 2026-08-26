@@ -7,31 +7,55 @@ import (
 )
 
 func TestSQLBuilders(t *testing.T) {
-	if got := selectAllSQL("orders", `"id", "status"`, true); got != `SELECT "id", "status" FROM orders WHERE id = $1` {
-		t.Errorf("selectAllSQL(byID) = %q", got)
+	sql, err := selectAllSQL("orders", `"id", "status"`, true)
+	if err != nil || sql != `SELECT "id", "status" FROM orders WHERE id = $1` {
+		t.Errorf("selectAllSQL(byID) = %q err=%v", sql, err)
 	}
-	if got := selectAllSQL("orders", `"id"`, false); got != `SELECT "id" FROM orders` {
-		t.Errorf("selectAllSQL(all) = %q", got)
+	sql, err = selectAllSQL("orders", `"id"`, false)
+	if err != nil || sql != `SELECT "id" FROM orders` {
+		t.Errorf("selectAllSQL(all) = %q err=%v", sql, err)
 	}
+	if _, err := selectAllSQL("orders; DROP TABLE x", `"id"`, false); err == nil {
+		t.Error("selectAllSQL: expected error for invalid table")
+	}
+}
 
+func TestValidateOrderBy(t *testing.T) {
+	valid := []string{"", "created_at", "created_at DESC", "a.b, c ASC", "status"}
+	for _, v := range valid {
+		if err := validateOrderBy(v); err != nil {
+			t.Errorf("validateOrderBy(%q) unexpected err: %v", v, err)
+		}
+	}
+	invalid := []string{"; DROP TABLE users", "a -- comment", "a; b", "a/*x*/b", "a'b", "a\"b"}
+	for _, v := range invalid {
+		if err := validateOrderBy(v); err == nil {
+			t.Errorf("validateOrderBy(%q) expected error", v)
+		}
+	}
+}
+
+func TestCountAndPageSQL(t *testing.T) {
 	spec := Specification{SQL: "SELECT * FROM orders WHERE status = $1"}
 
 	if got, want := countSQL(spec), "SELECT COUNT(*) FROM (SELECT * FROM orders WHERE status = $1) AS _count"; got != want {
 		t.Errorf("countSQL = %q, want %q", got, want)
 	}
 
-	if got, want := pageSQL(spec, 1, 0), spec.SQL; got != want {
-		t.Errorf("pageSQL(no paging) = %q, want %q", got, want)
+	sql, err := pageSQL(spec, 1, 0)
+	if err != nil || sql != spec.SQL {
+		t.Errorf("pageSQL(no paging) = %q err=%v, want %q", sql, err, spec.SQL)
 	}
 
-	if got, want := pageSQL(spec, 2, 20), spec.SQL+" LIMIT 20 OFFSET 20"; got != want {
-		t.Errorf("pageSQL(paged) = %q, want %q", got, want)
+	sql, err = pageSQL(spec, 2, 20)
+	if err != nil || sql != spec.SQL+" LIMIT 20 OFFSET 20" {
+		t.Errorf("pageSQL(paged) = %q err=%v", sql, err)
 	}
 
 	ordered := Specification{SQL: "SELECT * FROM products", OrderBy: "name DESC"}
-	if got, want := pageSQL(ordered, 1, 10),
-		"SELECT * FROM products ORDER BY name DESC LIMIT 10 OFFSET 0"; got != want {
-		t.Errorf("pageSQL(ordered) = %q, want %q", got, want)
+	sql, err = pageSQL(ordered, 1, 10)
+	if err != nil || sql != "SELECT * FROM products ORDER BY name DESC LIMIT 10 OFFSET 0" {
+		t.Errorf("pageSQL(ordered) = %q err=%v", sql, err)
 	}
 }
 
