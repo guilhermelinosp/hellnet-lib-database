@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -172,3 +173,51 @@ var (
 	_ runner = (pgx.Tx)(nil)
 	_        = pgconn.CommandTag{}
 )
+
+// txLevelBeginner is the capability needed for isolation-level transactions:
+// pool, acquired conn and raw conn all satisfy it in pgx v5.
+type txLevelBeginner interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}
+
+var _ txLevelBeginner = (*pgxpool.Pool)(nil)
+
+// isolationLevels maps the documented level strings onto pgx levels.
+var isolationLevels = map[string]pgx.TxIsoLevel{
+	string(pgx.ReadCommitted):  pgx.ReadCommitted,
+	string(pgx.RepeatableRead): pgx.RepeatableRead,
+	string(pgx.Serializable):   pgx.Serializable,
+}
+
+// parseIsolationLevel maps the documented level strings (case-insensitive,
+// surrounding spaces tolerated) onto pgx.TxOptions. Anything else — including
+// "" and PostgreSQL's read-uncommitted alias, which PG server-side treats as
+// read committed anyway — fails with the list of valid levels so callers can
+// self-correct without reading docs.
+func parseIsolationLevel(level string) (pgx.TxOptions, error) {
+	if iso, ok := isolationLevels[strings.ToLower(strings.TrimSpace(level))]; ok {
+		return pgx.TxOptions{IsoLevel: iso}, nil
+	}
+	return pgx.TxOptions{}, fmt.Errorf(
+		"database: invalid isolation level %q; valid levels: %q, %q, %q",
+		level, pgx.ReadCommitted, pgx.RepeatableRead, pgx.Serializable)
+}
+
+// TransactionalLevel runs fn atomically at an explicit isolation level
+// ("read committed", "repeatable read" or "serializable"; validated first).
+// It mirrors DB.Transactional end-to-end — shared compensation logic, retry
+// excluded inside transactions, contexts captured once at New — while plumb-
+// ing the level through pool.BeginTx so the requested PG semantics reach the
+// server untouched. Invalid levels fail fast BEFORE any connection work.
+func (db *DB) TransactionalLevel(level string, fn func(*Tx) error) error {
+	txo, err := parseIsolationLevel(level)
+	if err != nil {
+		return err
+	}
+	beginner, ok := db.pool.(txLevelBeginner)
+	if !ok {
+		return fmt.Errorf("database: pool does not support transaction isolation levels")
+	}
+	return runTransactional(func(c context.Context) (pgx.Tx, error) { return beginner.BeginTx(c, txo) },
+		&db.conn, fn)
+}
