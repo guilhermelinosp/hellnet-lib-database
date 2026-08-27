@@ -60,6 +60,14 @@ type Options struct {
 
 	// ── Diagnostics ─────────────────────────────────────────────
 	SlowQuery time.Duration
+
+	// ── Observability ───────────────────────────────────────────
+	// QueryHooks observam toda operação executada (before/after por tentativa
+	// de retry). Zero-value friendly: nil desativa totalmente.
+	QueryHooks []QueryHook
+	// HideQueryArgs corta os args antes de qualquer hook/métrica
+	// (PII/segredos não devem vazar para pipelines de observabilidade).
+	HideQueryArgs bool
 }
 
 // DefaultOptions returns the default configuration.
@@ -167,8 +175,21 @@ func (o Options) dsn() string {
 	return u.String()
 }
 
+// PoolStats é um snapshot dos contadores do pool usado pelas métricas
+// (db_pool_in_use / db_pool_idle / db_pool_max). Desacopla o pacote do tipo
+// concreto pgxpool.Stat sem depender de OTel.
+type PoolStats struct {
+	// InUse são conexões emprestadas (em uso na amostra).
+	InUse int64
+	// Idle são conexões ociosas aguardando reuso.
+	Idle int64
+	// Max é o limite configurado de conexões.
+	Max int64
+}
+
 // Pool is the minimal surface of pgxpool.Pool used by this package.
-// It exists so unit tests can supply a fake implementation.
+// It exists so unit tests can supply a fake implementation. Stat alimenta o
+// sampler interno das métricas de pool habilitadas via DB.EnableMetrics.
 type Pool interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -176,6 +197,23 @@ type Pool interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 	Ping(ctx context.Context) error
 	Close()
+	Stat() PoolStats
+}
+
+// poolStatsAdapter adapta *pgxpool.Pool ao contrato Pool/Stat projetando o
+// pgxpool.Stat nativo para o snapshot neutro PoolStats.
+type poolStatsAdapter struct {
+	*pgxpool.Pool
+}
+
+// Stat projeta AcquiredConns/IdleConns/MaxConns do pool nativo.
+func (a poolStatsAdapter) Stat() PoolStats {
+	s := a.Pool.Stat()
+	return PoolStats{
+		InUse: int64(s.AcquiredConns()),
+		Idle:  int64(s.IdleConns()),
+		Max:   int64(s.MaxConns()),
+	}
 }
 
 // DB is the entry point of the library: a pooled PostgreSQL connection with
@@ -284,13 +322,15 @@ func New(ctx context.Context, opts ...Options) (*DB, error) {
 
 	// Pool creation stays bound to Background: the pool outlives the
 	// construction-time context, whose lifetime only bounds New itself.
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	// O adaptador projeta Stat() nativo para PoolStats sem quebrar runner.
+	rawPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("database: create pool: %w", err)
 	}
+	pool := poolStatsAdapter{Pool: rawPool}
 
 	return &DB{
-		conn:  conn{r: pool, o: o, ctx: ctx},
+		conn:  newConn(pool, o, ctx),
 		pool:  pool,
 		retry: NewRetryPolicy(o.RetryEnabled, o.RetryMaxCount, o.RetryBaseDelay),
 	}, nil

@@ -80,18 +80,24 @@ func beginTxBounded(base context.Context, o Options, begin func(context.Context)
 // the transaction. Compensation paths use fresh or live-lineage contexts so a
 // rollback never reuses an expired one, and rollback failures are warned — a
 // swallowed failure would leak the pooled connection.
+//
+// src fornece opções, base e o registry COMPARTILHADO de hooks/métricas: a Tx
+// criada aqui enxerga coletores habilitados tardiamente no DB e reporta os
+// desfechos db_transactions_total / db_rollback_compensations_total.
 func runTransactional(
 	begin func(context.Context) (pgx.Tx, error),
-	base func() context.Context,
-	o Options,
+	src *conn,
 	fn func(tx *Tx) error,
 ) error {
-	pgxTx, err := beginTxBounded(base(), o, begin)
+	o := src.o
+
+	pgxTx, err := beginTxBounded(src.base(), o, begin)
 	if err != nil {
 		return err
 	}
 
-	tx := &Tx{conn: conn{r: pgxTx, o: o, ctx: base()}}
+	met := src.observed()
+	tx := &Tx{conn: src.derive(pgxTx)}
 
 	// done tracks whether fn resolved the transaction. A deferred rollback
 	// releases the connection if fn panics: a panic would otherwise unwind
@@ -101,6 +107,8 @@ func runTransactional(
 	done := false
 	defer func() {
 		if !done {
+			met.recordRollbackCompensation()
+			met.recordTx(txResultPanic)
 			rctx, rcancel := freshRollbackCtx(o)
 			defer rcancel()
 			if rbErr := pgxTx.Rollback(rctx); rbErr != nil {
@@ -111,17 +119,18 @@ func runTransactional(
 	}()
 
 	if err := fn(tx); err != nil {
-		rctx, rcancel := rollbackCtx(base(), o)
+		rctx, rcancel := rollbackCtx(src.base(), o)
 		rbErr := pgxTx.Rollback(rctx)
 		rcancel()
 		if rbErr != nil {
 			return errors.Join(err, fmt.Errorf("database: rollback: %w", rbErr))
 		}
 		done = true
+		met.recordTx(txResultRollback)
 		return err
 	}
 
-	mctx, mcancel := timeout(base(), o.CommandTimeout)
+	mctx, mcancel := timeout(src.base(), o.CommandTimeout)
 	comErr := pgxTx.Commit(mctx)
 	mcancel()
 	if comErr != nil {
@@ -129,6 +138,8 @@ func runTransactional(
 		// attempt a rollback to release the connection cleanly. The commit
 		// usually failed exactly because its context hit the deadline, so use
 		// a FRESH Background-backed timeout.
+		met.recordRollbackCompensation()
+		met.recordTx(txResultRollback)
 		rctx, rcancel := freshRollbackCtx(o)
 		rbErr := pgxTx.Rollback(rctx)
 		rcancel()
@@ -140,6 +151,7 @@ func runTransactional(
 		return fmt.Errorf("database: commit: %w", comErr)
 	}
 	done = true
+	met.recordTx(txResultCommit)
 	return nil
 }
 
@@ -152,7 +164,7 @@ func runTransactional(
 // IDatabaseTransaction.ExecuteAsync contract.
 func (db *DB) Transactional(fn func(tx *Tx) error) error {
 	return runTransactional(func(c context.Context) (pgx.Tx, error) { return db.pool.Begin(c) },
-		db.base, db.o, fn)
+		&db.conn, fn)
 }
 
 var (
