@@ -167,3 +167,23 @@ var (
 	_ runner = (*pgx.Conn)(nil)
 	_ runner = (*pgxpool.Conn)(nil)
 )
+
+// TransactionalLevel is Transactional with an explicit isolation level
+// ("read committed", "repeatable read" or "serializable"). Both *pgx.Conn and
+// *pgxpool.Conn satisfy BeginTx-with-options natively (asserted here), so no
+// connection-type branching leaks into callers. Invalid levels fail fast
+// before any begin is attempted; the Conn stays open after the call exactly
+// like plain Transactional.
+func (c *Conn) TransactionalLevel(level string, fn func(*Tx) error) error {
+	txo, err := parseIsolationLevel(level)
+	if err != nil {
+		return err
+	}
+	beginner, ok := c.r.(txLevelBeginner)
+	if !ok {
+		return fmt.Errorf("database: connection does not support transaction isolation levels")
+	}
+	return runTransactional(
+		func(ctx context.Context) (pgx.Tx, error) { return beginner.BeginTx(ctx, txo) },
+		&c.conn, fn)
+}
