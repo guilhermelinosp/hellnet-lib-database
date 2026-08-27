@@ -72,6 +72,7 @@ var _ pgx.Tx = (*fakeTx)(nil)
 type fakePoolGate struct {
 	tx       pgx.Tx
 	beginCtx context.Context
+	stats    PoolStats // devolvido por Stat para o sampler de métricas
 }
 
 func (p *fakePoolGate) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
@@ -91,6 +92,9 @@ func (p *fakePoolGate) Begin(ctx context.Context) (pgx.Tx, error) {
 
 func (p *fakePoolGate) Ping(context.Context) error { return nil }
 func (p *fakePoolGate) Close()                     {}
+
+// Stat alimenta o contrato estendido de Pool (métricas de pool).
+func (p *fakePoolGate) Stat() PoolStats { return p.stats }
 
 var _ Pool = (*fakePoolGate)(nil)
 

@@ -95,6 +95,27 @@ func (p RetryPolicy) Do(fn func() error) error {
 	return p.do(context.Background(), fn)
 }
 
+// DoValue é o irmão com valor de Do: executa fn retornando (T, error) sob a
+// mesma política — backoff exponential idêntico, discriminação de SQLSTATEs
+// permanentes idêntica e execução única quando desabilitada. Exposto no nível
+// de pacote para que OUTRAS libs/apps reutilizem a política sem passar pela
+// camada de conexão:
+//
+//	got, err := database.DoValue(policy, func() (string, error) { ... })
+func DoValue[T any](p RetryPolicy, fn func() (T, error)) (T, error) {
+	var out T
+	err := p.do(context.Background(), func() error {
+		var err error
+		out, err = fn()
+		return err
+	})
+	if err != nil {
+		var zero T
+		out = zero // contrato: com erro o valor não é utilizável
+	}
+	return out, err
+}
+
 // do is Do with the library-owned base context: backoff sleeps are interruptible,
 // and cancellation during them returns the last operation error joined with
 // ctx.Err() so neither failure mode is silently swallowed.

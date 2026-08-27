@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // Integration tests run against a REAL PostgreSQL instance.
@@ -582,5 +584,89 @@ func TestIntegrationConnTransactional(t *testing.T) {
 	count, err := Scalar[int64](db, "SELECT COUNT(*) FROM orders")
 	if err != nil || count != 1 {
 		t.Fatalf("after tx count=%d err=%v, want 1", count, err)
+	}
+}
+
+// TestIntegrationEnableMetrics é o smoke das métricas nativas contra um pool
+// real: EnableMetrics + roundtrip Execute/Query + presença das famílias no
+// registro isolado (e limpeza total pelo handle.Close).
+//
+// Setup padrão (namespace tools, via kubectl port-forward):
+//
+//	export HELLNET_TEST_PG_PORT=15432   # kubectl port-forward -n tools svc/postgres 15432:5432 &
+//	export HELLNET_TEST_PG_PASSWORD=$(kubectl get secret postgres-credentials -n tools -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
+func TestIntegrationEnableMetrics(t *testing.T) {
+	db := openIntegrationDB(t)
+	resetOrdersTable(t, db)
+
+	reg := prometheus.NewRegistry()
+	handle, err := db.EnableMetrics(reg)
+	if err != nil {
+		t.Fatalf("EnableMetrics: %v", err)
+	}
+	t.Cleanup(handle.Close)
+
+	if _, err := db.Execute(
+		"INSERT INTO orders (status, total) VALUES ('metric', 42.5)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := Query[order](db, "SELECT id, status FROM orders WHERE status = $1", "metric")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("query rows=%d err=%v, want 1", len(rows), err)
+	}
+
+	// Transação real: prova que a Tx criada DEPOIS do EnableMetrics herda o
+	// registro compartilhado e reporta commit em db_transactions_total.
+	if err := db.Transactional(func(tx *Tx) error {
+		_, err := tx.Execute("INSERT INTO orders (status) VALUES ('metric-tx')")
+		return err
+	}); err != nil {
+		t.Fatalf("tx: %v", err)
+	}
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	families := make(map[string]bool, len(mfs))
+	for _, mf := range mfs {
+		families[mf.GetName()] = true
+	}
+	for _, want := range []string{
+		"db_queries_total",
+		"db_query_duration_seconds",
+		"db_pool_acquires_total",
+		"db_transactions_total",
+		"db_rollback_compensations_total",
+		"db_pool_in_use", "db_pool_idle", "db_pool_max",
+	} {
+		if !families[want] {
+			t.Errorf("família %s ausente no registro após roundtrip real", want)
+		}
+	}
+
+	mc := handle.Collector()
+	if got := testutil.ToFloat64(mc.queriesTotal.WithLabelValues(OpExec, metricStatusOK)); got < 1 {
+		t.Errorf("exec/ok = %v, want >=1 contra Postgres real", got)
+	}
+	if got := testutil.ToFloat64(mc.txTotal.WithLabelValues(txResultCommit)); got != 1 {
+		t.Errorf("tx{commit} = %v, want 1 contra Postgres real", got)
+	}
+	if max := testutil.ToFloat64(mc.poolMax); max <= 0 {
+		t.Errorf("db_pool_max = %v, want >0 amostrado do pool pgx real", max)
+	}
+
+	// Close deve desregistrar tudo — smoke do ciclo completo.
+	handle.Close()
+	mfs, err = reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather pós-Close: %v", err)
+	}
+	if len(mfs) != 0 {
+		names := make([]string, 0, len(mfs))
+		for _, mf := range mfs {
+			names = append(names, mf.GetName())
+		}
+		t.Errorf("pós-handle.Close restaram famílias: %v", names)
 	}
 }

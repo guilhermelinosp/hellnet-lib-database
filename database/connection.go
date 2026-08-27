@@ -56,8 +56,9 @@ func (db *DB) Acquire() (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database: acquire connection: %w", err)
 	}
+	db.hooks.observed().observeAcquire() // nil-safe: sem métricas é no-op
 	return &Conn{
-		conn:    conn{r: pconn, o: db.o, ctx: db.ctx},
+		conn:    db.derive(pconn),
 		closeFn: func(context.Context) error { pconn.Release(); return nil },
 		beginFn: pconn.Begin,
 	}, nil
@@ -95,7 +96,7 @@ func Connect(ctx context.Context, opts Options) (*Conn, error) {
 		return nil, fmt.Errorf("database: connect: %w", err)
 	}
 	return &Conn{
-		conn:    conn{r: pgxConn, o: opts, ctx: ctx},
+		conn:    newConn(pgxConn, opts, ctx),
 		closeFn: pgxConn.Close,
 		beginFn: pgxConn.Begin,
 	}, nil
@@ -134,7 +135,7 @@ func (c *Conn) Begin() (*Tx, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database: begin on connection: %w", err)
 	}
-	return &Tx{conn: conn{r: pgxTx, o: c.o, ctx: c.ctx}}, nil
+	return &Tx{conn: c.derive(pgxTx)}, nil
 }
 
 // Transactional runs fn atomically on this dedicated connection: fn's
@@ -143,7 +144,7 @@ func (c *Conn) Begin() (*Tx, error) {
 // fn's statements, commit and rollback. The Conn itself stays open after the
 // call — call Close when finished with it.
 func (c *Conn) Transactional(fn func(tx *Tx) error) error {
-	return runTransactional(c.beginFn, c.base, c.o, fn)
+	return runTransactional(c.beginFn, &c.conn, fn)
 }
 
 // ConnQuery maps every row into T on the dedicated connection. No retry.

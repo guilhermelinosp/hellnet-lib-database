@@ -191,3 +191,46 @@ func TestSleepBackoff(t *testing.T) {
 		t.Errorf("sleep(2) returned after %s, want >= 4ms", elapsed)
 	}
 }
+
+// TestDoValueCarriesValueAndRetries pins the DoValue contract: same exponential
+// behavior as Do, but the fn may return a value — transient failures retry and
+// the eventual value surfaces; permanent SQLSTATEs do not.
+func TestDoValueCarriesValueAndRetries(t *testing.T) {
+	p := NewRetryPolicy(true, 5, time.Millisecond)
+
+	calls := 0
+	got, err := DoValue(p, func() (string, error) {
+		calls++
+		if calls < 3 {
+			return "", pgErr("08006") // connection_failure — transient
+		}
+		return "payload", nil
+	})
+	if err != nil || got != "payload" {
+		t.Errorf("DoValue = (%q, %v), want (\"payload\", nil) after retries", got, err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+
+	// Permanent error: exactly one call, zero value returned.
+	calls = 0
+	zero, err := DoValue(p, func() (int, error) {
+		calls++
+		return -1, pgErr("23505") // unique_violation — permanent
+	})
+	var asPg *pgconn.PgError
+	if calls != 1 || !errors.As(err, &asPg) || asPg.Code != "23505" {
+		t.Errorf("permanent path: calls=%d err=%v, want single call surfacing SQLSTATE 23505", calls, err)
+	}
+	if zero != 0 {
+		t.Errorf("on permanent error the value should be T's zero, got %d", zero)
+	}
+
+	// Disabled policy: runs once and delivers the value unchanged.
+	disabled := NewRetryPolicy(false, 9, time.Millisecond)
+	value, err := DoValue(disabled, func() (int, error) { return 42, nil })
+	if err != nil || value != 42 {
+		t.Errorf("disabled policy: (%d, %v), want (42, nil)", value, err)
+	}
+}
