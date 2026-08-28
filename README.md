@@ -393,3 +393,5 @@ mesmos testes automaticamente a cada PR.
 [Apache 2.0](LICENSE)
 
 <!-- release pipeline verification -->
+
+<!-- verify round 2 -->
