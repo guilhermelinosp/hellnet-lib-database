@@ -1,6 +1,6 @@
 module github.com/guilhermelinosp/hellnet-lib-database
 
-go 1.26
+go 1.27.0
 
 require (
 	github.com/guilhermelinosp/hellnet-lib-environments v1.1.15
