@@ -11,19 +11,19 @@ on:
       - '.github/**'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   release:
     name: release
-    uses: guilhermelinosp/templates/.github/workflows/release.yml@fde7d4a5a2e7aa5dd42e8812df4783daa39b1543 # main
     permissions:
       contents: write
+    uses: guilhermelinosp/templates/.github/workflows/release.yml@fde7d4a5a2e7aa5dd42e8812df4783daa39b1543 # main
 
   quality:
     name: quality
     needs: [release]
+    permissions:
+      contents: read
+      pull-requests: write
     uses: guilhermelinosp/templates/.github/workflows/lib-quality.yml@fde7d4a5a2e7aa5dd42e8812df4783daa39b1543 # main
     with:
       go-version-file: go.mod
