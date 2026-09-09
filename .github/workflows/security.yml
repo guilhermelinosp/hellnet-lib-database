@@ -1,4 +1,4 @@
-name: Security
+name: security
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   security:
-    name: Security
+    name: security
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -39,7 +39,7 @@ jobs:
 
       - name: GoSec
         if: hashFiles('go.mod') != ''
-        uses: securego/gosec@4d447d9bf750776ec436724dcaf728e5c629f2f6 # master
+        uses: securego/gosec@8075fd2e520d33330afe168f26fc7a91f57f2cbc # master
         with:
           args: >-
             -fmt sarif
@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload GoSec SARIF
         if: always() && hashFiles('gosec.sarif') != ''
-        uses: github/codeql-action/upload-sarif@fddeee1a7ece751b577e409a89057319e3172939 # v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: gosec.sarif
           category: gosec
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always() && hashFiles('trivy.sarif') != ''
-        uses: github/codeql-action/upload-sarif@fddeee1a7ece751b577e409a89057319e3172939 # v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           sarif_file: trivy.sarif
           category: trivy
