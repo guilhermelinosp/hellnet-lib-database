@@ -2,6 +2,7 @@ package database
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -66,14 +67,24 @@ func TestLoadFromEnv(t *testing.T) {
 }
 
 // TestLoadFromEnvLoadsDotEnv ensures env-first is self-contained: LoadFromEnv
-// loads a .env file pointed by HELLNET_DATABASE_ENV_FILE without the caller
+// loads the conventional .env file (cwd / parents, dev only) without the caller
 // having to call any external DotEnv loader. Mirrors the other Hellnet libs.
 func TestLoadFromEnvLoadsDotEnv(t *testing.T) {
-	f := t.TempDir() + "/db.env"
-	if err := os.WriteFile(f, []byte("HELLNET_DATABASE_NAME=fromdotenv\n"), 0o600); err != nil {
+	t.Setenv("HELLNET_ENVIRONMENT", "test")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(
+		"HELLNET_DATABASE_NAME=fromdotenv\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HELLNET_DATABASE_ENV_FILE", f)
+	for _, key := range []string{
+		"HELLNET_DATABASE_NAME", "HELLNET_NAME",
+	} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
 	// The loaded var must not leak into other tests.
 	defer os.Unsetenv("HELLNET_DATABASE_NAME")
 

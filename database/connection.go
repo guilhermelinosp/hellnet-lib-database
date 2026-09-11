@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -67,16 +66,9 @@ func (db *DB) Acquire() (*Conn, error) {
 // Connect opens a single standalone connection (no pool) from explicit
 // options. Use it for short-lived programs, scripts, or whenever you explicitly
 // want exactly one connection with full open/close control. Pair with Close.
-// Connect is construction-time, so it takes the context that is then captured
-// once on the returned Conn and propagated internally to every later operation.
-func Connect(ctx context.Context, opts Options) (*Conn, error) {
-	// Defensive: degrade instead of panicking on a programming slip — same
-	// construction-time-once approach as New (and hellnet-lib-cache).
-	if ctx == nil {
-		slog.Warn("database: nil context supplied to Connect; using Background")
-		ctx = context.Background()
-	}
-
+// Internal operations derive their timeouts from a Background context captured
+// once here and propagated internally to every later operation.
+func Connect(opts Options) (*Conn, error) {
 	opts = withDefaults(opts)
 	if err := Validate(opts); err != nil {
 		return nil, err
@@ -88,7 +80,7 @@ func Connect(ctx context.Context, opts Options) (*Conn, error) {
 	}
 	cfg.ConnectTimeout = opts.ConnectionTimeout
 
-	cctx, cancel := timeout(ctx, opts.ConnectionTimeout)
+	cctx, cancel := timeout(context.Background(), opts.ConnectionTimeout)
 	defer cancel()
 
 	pgxConn, err := pgx.ConnectConfig(cctx, cfg)
@@ -96,7 +88,7 @@ func Connect(ctx context.Context, opts Options) (*Conn, error) {
 		return nil, fmt.Errorf("database: connect: %w", err)
 	}
 	return &Conn{
-		conn:    newConn(pgxConn, opts, ctx),
+		conn:    newConn(pgxConn, opts, context.Background()),
 		closeFn: pgxConn.Close,
 		beginFn: pgxConn.Begin,
 	}, nil
@@ -104,9 +96,9 @@ func Connect(ctx context.Context, opts Options) (*Conn, error) {
 
 // ConnectFromEnv loads options from HELLNET_DATABASE_* variables (and a .env
 // file via LoadFromEnv) and opens a single standalone connection. The env
-// loading is fully contained in the library. Like Connect, it captures ctx once.
-func ConnectFromEnv(ctx context.Context) (*Conn, error) {
-	return Connect(ctx, LoadFromEnv())
+// loading is fully contained in the library.
+func ConnectFromEnv() (*Conn, error) {
+	return Connect(LoadFromEnv())
 }
 
 // Close releases or closes the underlying connection. For an Acquired
