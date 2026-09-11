@@ -34,14 +34,12 @@ Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde
 ### Primeiras linhas
 
 ```go
-ctx := context.Background()  // cria o crachá do estagiário: de quem é o pedido e até quando vale
-db, err := database.New(ctx) // contrata o estagiário: lê as env vars e abre o caminho até o caderno
+db, err := database.New() // contrata o estagiário: lê as env vars e abre o caminho até o caderno
 ```
 
 Linha por linha:
 
-- `ctx := context.Background()` — cria um **contexto**: pense nele como o crachá do estagiário, que diz de quem é o pedido e até quando ele vale (prazos e cancelamentos). Você cria UMA vez, no início da aplicação;
-- `db, err := database.New(ctx)` — contrata o **estagiário**: ele lê as configurações (variáveis de ambiente), abre o caminho até o caderno e devolve um `db` pronto para usar; o `err` avisa se algo deu errado na contratação.
+- `database.New()` — contrata o **estagiário**: ele lê as configurações (variáveis de ambiente), abre o caminho até o caderno e devolve um `db` pronto para usar; o `err` avisa se algo deu errado na contratação. O contexto de runtime é capturado internamente (`context.Background()`), como nas outras libs Hellnet.
 
 ---
 
@@ -66,41 +64,39 @@ export HELLNET_DATABASE_PASSWORD=password
 ```
 
 ```go
-// O contexto da aplicação é passado UMA VEZ, na construção:
-ctx := context.Background() // ou um ctx app-scoped/long-lived
-
-db, err := database.OpenFromEnv(ctx)
+// Sem ctx no construtor: o contexto de runtime é capturado internamente.
+db, err := database.OpenFromEnv()
 ```
 
 > **Env-first é self-contained.** `OpenFromEnv`/`LoadFromEnv` carregam o `.env`
-> automaticamente (via `HELLNET_DATABASE_ENV_FILE`, `HELLNET_ENV_FILE` ou o
-> convencional `.env`/`./.env`) usando `hellnet-lib-environments`. O chamador
+> automaticamente (o convencional `.env`/`./.env` em dev) usando
+> `hellnet-lib-environments`, com fallback do prefixo compartilhado `HELLNET_`
+> (ex.: `HELLNET_DATABASE_HOST` **ou** `HELLNET_HOST`). O chamador
 > **não** precisa chamar nenhum loader de `.env` — basta definir as variáveis
 > (ou o arquivo) e abrir. Isso espelha o padrão das demais libs Hellnet
 > (`hellnet-lib-kafka`, `hellnet-lib-cache`, `hellnet-lib-telemetry`).
 
-### Contexto: uma vez no construtor
+### Contexto: capturado no runtime
 
-O `context.Context` é capturado no `New`/`Connect` e **propagado internamente**
-pela lib com os timeouts de cada operação (`CommandTimeout`,
-`ConnectionTimeout`). Nenhum método operacional recebe ctx:
+O `context.Context` é capturado internamente no `New`/`Connect`
+(`context.Background()`) e **propagado internamente** pela lib com os timeouts
+de cada operação (`CommandTimeout`, `ConnectionTimeout`). Nenhum construtor nem
+método operacional recebe ctx:
 
 ```go
-ctx := context.Background()
-db, err := database.New(ctx) // env-first; database.New(ctx, opts...) p/ explícito
+db, err := database.New() // env-first; database.New(opts...) p/ explícito
 
 n, err := db.Execute("UPDATE orders SET status = $1 WHERE id = $2", "done", id) // sem ctx
 page, err := repo.Paginate(spec, 1, 20)                                         // sem ctx
 ```
 
-> Passe um contexto de **vida longa** (app-scoped). O cancelamento cooperativo
-> por-request continua disponível via middleware HTTP (onde a origem é o
-> request), não via parâmetro.
+> Os timeouts por-request continuam disponíveis via middleware HTTP (onde a
+> origem é o request), não via parâmetro.
 
 ### Via options explícitas
 
 ```go
-db, err := database.New(ctx, database.Options{
+db, err := database.New(database.Options{
     Host:     "pg.internal",
     Database: "orders",
     Username: "app",
@@ -201,7 +197,7 @@ programas curtos, scripts ou quando se quer exatamente uma conexão com controle
 total de open/close.
 
 ```go
-conn, err := database.Connect(ctx, database.Options{
+conn, err := database.Connect(database.Options{
     Host: "pg.internal", Database: "orders", Username: "app", Password: "secret",
 })
 if err != nil { /* ... */ }

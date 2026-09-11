@@ -18,7 +18,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"net/url"
 	"reflect"
@@ -89,41 +88,42 @@ func DefaultOptions() Options {
 	}
 }
 
-// fromEnv overlays HELLNET_DATABASE_* environment variables on top of the
+// fromEnv overlays HELLNET_DATABASE_* environment variables (falling back to
+// the shared HELLNET_* prefix, mirroring the other Hellnet libs) on top of the
 // provided base Options. It mirrors the env-first convention used across the
 // other Hellnet libs (hellnet-lib-kafka, hellnet-lib-cache, hellnet-lib-telemetry).
 func (o *Options) fromEnv(base Options) {
-	o.Host = environments.GetString(envPrefix, "", "HOST", base.Host)
-	o.Port = environments.GetInt(envPrefix, "", "PORT", base.Port)
-	o.Database = environments.GetString(envPrefix, "", "NAME", base.Database)
-	o.Username = environments.GetString(envPrefix, "", "USERNAME", base.Username)
-	o.Password = environments.GetString(envPrefix, "", "PASSWORD", base.Password)
+	o.Host = environments.GetString(envPrefix, "HELLNET_", "HOST", base.Host)
+	o.Port = environments.GetInt(envPrefix, "HELLNET_", "PORT", base.Port)
+	o.Database = environments.GetString(envPrefix, "HELLNET_", "NAME", base.Database)
+	o.Username = environments.GetString(envPrefix, "HELLNET_", "USERNAME", base.Username)
+	o.Password = environments.GetString(envPrefix, "HELLNET_", "PASSWORD", base.Password)
 
-	o.PoolMinSize = environments.GetInt(envPrefix, "", "POOL_MIN_SIZE", base.PoolMinSize)
-	o.PoolMaxSize = environments.GetInt(envPrefix, "", "POOL_MAX_SIZE", base.PoolMaxSize)
+	o.PoolMinSize = environments.GetInt(envPrefix, "HELLNET_", "POOL_MIN_SIZE", base.PoolMinSize)
+	o.PoolMaxSize = environments.GetInt(envPrefix, "HELLNET_", "POOL_MAX_SIZE", base.PoolMaxSize)
 
 	o.CommandTimeout = time.Duration(
-		environments.GetInt(envPrefix, "", "COMMAND_TIMEOUT_SECONDS", int(base.CommandTimeout/time.Second))) * time.Second
+		environments.GetInt(envPrefix, "HELLNET_", "COMMAND_TIMEOUT_SECONDS", int(base.CommandTimeout/time.Second))) * time.Second
 	o.ConnectionTimeout = time.Duration(
-		environments.GetInt(envPrefix, "", "CONNECTION_TIMEOUT_SECONDS", int(base.ConnectionTimeout/time.Second))) * time.Second
+		environments.GetInt(envPrefix, "HELLNET_", "CONNECTION_TIMEOUT_SECONDS", int(base.ConnectionTimeout/time.Second))) * time.Second
 
-	o.RetryEnabled = environments.GetBool(envPrefix, "", "RETRY_ENABLED", base.RetryEnabled)
-	o.RetryMaxCount = environments.GetInt(envPrefix, "", "RETRY_MAX_COUNT", base.RetryMaxCount)
+	o.RetryEnabled = environments.GetBool(envPrefix, "HELLNET_", "RETRY_ENABLED", base.RetryEnabled)
+	o.RetryMaxCount = environments.GetInt(envPrefix, "HELLNET_", "RETRY_MAX_COUNT", base.RetryMaxCount)
 	o.RetryBaseDelay = time.Duration(
-		environments.GetInt(envPrefix, "", "RETRY_BASE_DELAY_MS", int(base.RetryBaseDelay/time.Millisecond))) * time.Millisecond
+		environments.GetInt(envPrefix, "HELLNET_", "RETRY_BASE_DELAY_MS", int(base.RetryBaseDelay/time.Millisecond))) * time.Millisecond
 
 	o.SlowQuery = time.Duration(
-		environments.GetInt(envPrefix, "", "SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
+		environments.GetInt(envPrefix, "HELLNET_", "SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
 }
 
-// loadEnvFiles loads .env files through hellnet-lib-environments (an explicit
-// file pointed by HELLNET_DATABASE_ENV_FILE, the shared HELLNET_ENV_FILE, or
-// the conventional ./.env) so callers only need OpenFromEnv/LoadFromEnv. The
-// error is ignored on purpose: a missing env file is not fatal (explicit
-// Options or already-set environment variables still work). This mirrors the
-// other Hellnet libs.
+// loadEnvFiles loads .env files through hellnet-lib-environments using the
+// shared convention of the other Hellnet libs: the conventional ./.env (and
+// its parent-directory candidates) when in a dev environment. The error is
+// ignored on purpose: a missing env file is not fatal (explicit Options or
+// already-set environment variables still work). This mirrors the other
+// Hellnet libs.
 func loadEnvFiles() {
-	_ = environments.LoadDotEnv("HELLNET_DATABASE_ENV_FILE", "HELLNET_ENV_FILE")
+	_ = environments.LoadDotEnv()
 }
 
 // LoadFromEnv loads HELLNET_DATABASE_* environment variables (plus a .env file
@@ -283,21 +283,12 @@ func defaultRetryEnabled(o *Options, d Options) {
 }
 
 // New creates a DB from explicit options, or from the environment when called
-// with a single ctx plus no options (env-first, mirroring hellnet-lib-cache's
-// New). In the no-options form it loads HELLNET_DATABASE_* (and a .env file)
-// via LoadFromEnv. The context is captured ONCE here and propagated internally
-// to every later operation (per-statement timeouts derive from it) — public
-// methods do not take a context.Context. No connection is established yet;
-// call Ping to verify.
-func New(ctx context.Context, opts ...Options) (*DB, error) {
-	// Defensive: documented as required, but degrade instead of panicking on a
-	// programming slip during startup. Warned ONCE here at construction —
-	// never per operation (same approach as hellnet-lib-cache).
-	if ctx == nil {
-		slog.Warn("database: nil context supplied to New; using Background")
-		ctx = context.Background()
-	}
-
+// with no options (env-first, mirroring hellnet-lib-cache's New). In the
+// no-options form it loads HELLNET_DATABASE_* (and a .env file) via
+// LoadFromEnv. Internal operations derive their per-statement timeouts from a
+// Background context captured once here — public methods do not take a
+// context.Context. No connection is established yet; call Ping to verify.
+func New(opts ...Options) (*DB, error) {
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]
@@ -320,9 +311,9 @@ func New(ctx context.Context, opts ...Options) (*DB, error) {
 	cfg.MaxConns = int32(min(maxSize, math.MaxInt32))
 	cfg.ConnConfig.ConnectTimeout = o.ConnectionTimeout
 
-	// Pool creation stays bound to Background: the pool outlives the
-	// construction-time context, whose lifetime only bounds New itself.
-	// O adaptador projeta Stat() nativo para PoolStats sem quebrar runner.
+	// Pool creation stays bound to Background: the pool outlives any
+	// construction-time context. O adaptador projeta Stat() nativo para
+	// PoolStats sem quebrar runner.
 	rawPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("database: create pool: %w", err)
@@ -330,17 +321,16 @@ func New(ctx context.Context, opts ...Options) (*DB, error) {
 	pool := poolStatsAdapter{Pool: rawPool}
 
 	return &DB{
-		conn:  newConn(pool, o, ctx),
+		conn:  newConn(pool, o, context.Background()),
 		pool:  pool,
 		retry: NewRetryPolicy(o.RetryEnabled, o.RetryMaxCount, o.RetryBaseDelay),
 	}, nil
 }
 
 // MustNew is like New but panics on failure. Useful at service startup where a
-// misconfiguration should fail fast. The context is captured once at
-// construction and propagated internally.
-func MustNew(ctx context.Context, opts ...Options) *DB {
-	db, err := New(ctx, opts...)
+// misconfiguration should fail fast.
+func MustNew(opts ...Options) *DB {
+	db, err := New(opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -349,10 +339,10 @@ func MustNew(ctx context.Context, opts ...Options) *DB {
 
 // OpenFromEnv loads options from the environment (and a .env file) and builds
 // the DB. It is the equivalent of the .NET AddHellnetDatabase() env-first
-// overload and is a thin wrapper over New(ctx). The env loading is fully
-// contained in the library — no external DotEnv call is required by the caller.
-func OpenFromEnv(ctx context.Context) (*DB, error) {
-	return New(ctx)
+// overload and is a thin wrapper over New. The env loading is fully contained
+// in the library — no external DotEnv call is required by the caller.
+func OpenFromEnv() (*DB, error) {
+	return New()
 }
 
 // Close releases the underlying pool.

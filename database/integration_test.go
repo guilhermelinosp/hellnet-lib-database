@@ -64,8 +64,8 @@ func integrationOptions(t *testing.T) Options {
 
 func openIntegrationDB(t *testing.T) *DB {
 	t.Helper()
-	// Context is captured once at construction and propagated internally.
-	db, err := New(context.Background(), integrationOptions(t))
+	// Runtime operations derive their timeouts from a background context.
+	db, err := New(integrationOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -307,8 +307,7 @@ func TestIntegrationTransientRetryReal(t *testing.T) {
 	opts.RetryMaxCount = 6
 	opts.RetryBaseDelay = 50 * time.Millisecond
 
-	ctx := context.Background()
-	db, err := New(ctx, opts)
+	db, err := New(opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -329,7 +328,7 @@ func TestIntegrationTransientRetryReal(t *testing.T) {
 	t.Cleanup(func() { _, _ = db.Execute("DROP TABLE IF EXISTS lock_retry_test") })
 
 	// Second physical connection: hold the row lock in an open transaction.
-	holder, err := Connect(ctx, opts)
+	holder, err := Connect(opts)
 	if err != nil {
 		t.Fatalf("Connect(holder): %v", err)
 	}
@@ -413,7 +412,7 @@ func TestIntegrationSlowQueryLogCapture(t *testing.T) {
 	slog.SetDefault(slog.New(capture))
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 
-	db, err := New(context.Background(), opts)
+	db, err := New(opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -492,9 +491,9 @@ func TestIntegrationAcquireMultipleConns(t *testing.T) {
 }
 
 func TestIntegrationConnectSingleConn(t *testing.T) {
-	// Connect is construction-time: it captures the context once on the Conn.
-	ctx := context.Background()
-	conn, err := Connect(ctx, integrationOptions(t))
+	// Connect is construction-time: runtime operations derive their timeouts
+	// from a background context captured once on the Conn.
+	conn, err := Connect(integrationOptions(t))
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

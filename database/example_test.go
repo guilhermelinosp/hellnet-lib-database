@@ -1,7 +1,6 @@
 package database
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,8 +16,8 @@ type Order struct {
 
 // ExampleOpenFromEnv connects using HELLNET_DATABASE_* variables.
 func ExampleOpenFromEnv() {
-	// Context is captured once at construction and propagated internally.
-	db, err := OpenFromEnv(context.Background())
+	// Internal operations derive their timeouts from a background context.
+	db, err := OpenFromEnv()
 	if err != nil {
 		slog.Error("configuration error", "err", err)
 		return
