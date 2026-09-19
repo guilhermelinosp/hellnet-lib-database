@@ -21,6 +21,7 @@ import (
 	"math"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,27 +94,27 @@ func DefaultOptions() Options {
 // provided base Options. It mirrors the env-first convention used across the
 // other Hellnet libs (hellnet-lib-kafka, hellnet-lib-cache, hellnet-lib-telemetry).
 func (o *Options) fromEnv(base Options) {
-	o.Host = environments.GetString(envPrefix, "HELLNET_", "HOST", base.Host)
-	o.Port = environments.GetInt(envPrefix, "HELLNET_", "PORT", base.Port)
-	o.Database = environments.GetString(envPrefix, "HELLNET_", "NAME", base.Database)
-	o.Username = environments.GetString(envPrefix, "HELLNET_", "USERNAME", base.Username)
-	o.Password = environments.GetString(envPrefix, "HELLNET_", "PASSWORD", base.Password)
+	o.Host = environments.Get("HELLNET_DATABASE_HOST", base.Host)
+	o.Port = environments.GetInt("HELLNET_DATABASE_PORT", strconv.Itoa(base.Port))
+	o.Database = environments.Get("HELLNET_DATABASE_NAME", base.Database)
+	o.Username = environments.Get("HELLNET_DATABASE_USERNAME", base.Username)
+	o.Password = environments.Get("HELLNET_DATABASE_PASSWORD", base.Password)
 
-	o.PoolMinSize = environments.GetInt(envPrefix, "HELLNET_", "POOL_MIN_SIZE", base.PoolMinSize)
-	o.PoolMaxSize = environments.GetInt(envPrefix, "HELLNET_", "POOL_MAX_SIZE", base.PoolMaxSize)
+	o.PoolMinSize = environments.GetInt("HELLNET_DATABASE_POOL_MIN_SIZE", strconv.Itoa(base.PoolMinSize))
+	o.PoolMaxSize = environments.GetInt("HELLNET_DATABASE_POOL_MAX_SIZE", strconv.Itoa(base.PoolMaxSize))
 
 	o.CommandTimeout = time.Duration(
-		environments.GetInt(envPrefix, "HELLNET_", "COMMAND_TIMEOUT_SECONDS", int(base.CommandTimeout/time.Second))) * time.Second
+		environments.GetInt("HELLNET_DATABASE_COMMAND_TIMEOUT_SECONDS", strconv.Itoa(int(base.CommandTimeout/time.Second)))) * time.Second
 	o.ConnectionTimeout = time.Duration(
-		environments.GetInt(envPrefix, "HELLNET_", "CONNECTION_TIMEOUT_SECONDS", int(base.ConnectionTimeout/time.Second))) * time.Second
+		environments.GetInt("HELLNET_DATABASE_CONNECTION_TIMEOUT_SECONDS", strconv.Itoa(int(base.ConnectionTimeout/time.Second)))) * time.Second
 
-	o.RetryEnabled = environments.GetBool(envPrefix, "HELLNET_", "RETRY_ENABLED", base.RetryEnabled)
-	o.RetryMaxCount = environments.GetInt(envPrefix, "HELLNET_", "RETRY_MAX_COUNT", base.RetryMaxCount)
+	o.RetryEnabled = environments.GetBool("HELLNET_DATABASE_RETRY_ENABLED", strconv.FormatBool(base.RetryEnabled))
+	o.RetryMaxCount = environments.GetInt("HELLNET_DATABASE_RETRY_MAX_COUNT", strconv.Itoa(base.RetryMaxCount))
 	o.RetryBaseDelay = time.Duration(
-		environments.GetInt(envPrefix, "HELLNET_", "RETRY_BASE_DELAY_MS", int(base.RetryBaseDelay/time.Millisecond))) * time.Millisecond
+		environments.GetInt("HELLNET_DATABASE_RETRY_BASE_DELAY_MS", strconv.Itoa(int(base.RetryBaseDelay/time.Millisecond)))) * time.Millisecond
 
 	o.SlowQuery = time.Duration(
-		environments.GetInt(envPrefix, "HELLNET_", "SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
+		environments.GetInt("HELLNET_DATABASE_SLOW_QUERY_MS", strconv.Itoa(int(base.SlowQuery/time.Millisecond)))) * time.Millisecond
 }
 
 // loadEnvFiles loads .env files through hellnet-lib-environments using the
@@ -215,6 +216,9 @@ func (a poolStatsAdapter) Stat() PoolStats {
 		Max:   int64(s.MaxConns()),
 	}
 }
+
+// Ensure poolStatsAdapter implements Pool at compile time.
+var _ Pool = (*poolStatsAdapter)(nil)
 
 // DB is the entry point of the library: a pooled PostgreSQL connection with
 // executor methods, transactional support and retry semantics. Create it with
