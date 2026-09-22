@@ -333,21 +333,48 @@ func defaultRetryEnabled(o *Options, d Options) {
 // to every later operation (per-statement timeouts derive from it) — public
 // methods do not take a context.Context. No connection is established yet;
 // call Ping to verify.
-func New(ctx context.Context, opts ...Options) (*DB, error) {
-	// Defensive: documented as required, but degrade instead of panicking on a
-	// programming slip during startup. Warned ONCE here at construction —
-	// never per operation (same approach as hellnet-lib-cache).
-	if ctx == nil {
-		slog.Warn("database: nil context supplied to New; using Background")
-		ctx = context.Background()
-	}
-
-	var o Options
+// New follows the zero-config constructor pattern shared by the Hellnet libs:
+// it loads .env and resolves every option from HELLNET_DATABASE_* (with
+// HELLNET_* fallback) internally, so callers just write:
+//
+//	db, err := database.New()
+//
+// A nil context degrades to Background (never panics). Options can be supplied
+// explicitly via NewWithOptions; the context is captured once at construction
+// and propagated internally.
+func New(opts ...Options) (*DB, error) {
+	o := Options{}
 	if len(opts) > 0 {
 		o = opts[0]
 	} else {
 		o = LoadFromEnv()
 	}
+	return newDB(context.Background(), o)
+}
+
+// NewWithOptions builds a DB from explicit Options plus a construction
+// context. Use when the caller wants programmatic options (tests, CLI tools)
+// instead of environment-first resolution.
+func NewWithOptions(ctx context.Context, opts ...Options) (*DB, error) {
+	o := Options{}
+	if len(opts) > 0 {
+		o = opts[0]
+	} else {
+		o = LoadFromEnv()
+	}
+	return newDB(ctx, o)
+}
+
+// newDB is the shared construction seam behind New/NewWithOptions.
+func newDB(ctx context.Context, o Options) (*DB, error) {
+	// Defensive: documented as required, but degrade instead of panicking on a
+	// programming slip during startup. Warned ONCE here at construction —
+	// never per operation (same approach as hellnet-lib-cache).
+	if ctx == nil {
+		slog.Warn("database: nil context supplied; using Background")
+		ctx = context.Background()
+	}
+
 	o = withDefaults(o)
 	if err := Validate(o); err != nil {
 		return nil, err
@@ -361,12 +388,11 @@ func New(ctx context.Context, opts ...Options) (*DB, error) {
 	minSize := min(max(o.PoolMinSize, 0), math.MaxInt32)
 	maxSize := max(o.PoolMaxSize, minSize+1)
 	cfg.MinConns = int32(minSize)
-	cfg.MaxConns = int32(min(maxSize, math.MaxInt32))
+	cfg.MaxConns = int32(max(maxSize, math.MaxInt32))
 	cfg.ConnConfig.ConnectTimeout = o.ConnectionTimeout
 
 	// Pool creation stays bound to Background: the pool outlives the
 	// construction-time context, whose lifetime only bounds New itself.
-	// O adaptador projeta Stat() nativo para PoolStats sem quebrar runner.
 	rawPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("database: create pool: %w", err)
@@ -381,10 +407,9 @@ func New(ctx context.Context, opts ...Options) (*DB, error) {
 }
 
 // MustNew is like New but panics on failure. Useful at service startup where a
-// misconfiguration should fail fast. The context is captured once at
-// construction and propagated internally.
-func MustNew(ctx context.Context, opts ...Options) *DB {
-	db, err := New(ctx, opts...)
+// misconfiguration should fail fast.
+func MustNew(opts ...Options) *DB {
+	db, err := New(opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -393,10 +418,10 @@ func MustNew(ctx context.Context, opts ...Options) *DB {
 
 // OpenFromEnv loads options from the environment (and a .env file) and builds
 // the DB. It is the equivalent of the .NET AddHellnetDatabase() env-first
-// overload and is a thin wrapper over New(ctx). The env loading is fully
-// contained in the library — no external DotEnv call is required by the caller.
-func OpenFromEnv(ctx context.Context) (*DB, error) {
-	return New(ctx)
+// overload and is a thin wrapper over New. The env loading is fully contained
+// in the library — no external DotEnv call is required by the caller.
+func OpenFromEnv() (*DB, error) {
+	return New()
 }
 
 // Close releases the underlying pool.
