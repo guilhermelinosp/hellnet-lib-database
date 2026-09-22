@@ -16,6 +16,7 @@
 package database
 
 import (
+	"strconv"
 	"context"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,8 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"time"
 
 	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
@@ -93,27 +96,48 @@ func DefaultOptions() Options {
 // provided base Options. It mirrors the env-first convention used across the
 // other Hellnet libs (hellnet-lib-kafka, hellnet-lib-cache, hellnet-lib-telemetry).
 func (o *Options) fromEnv(base Options) {
-	o.Host = environments.GetString(envPrefix, "", "HOST", base.Host)
-	o.Port = environments.GetInt(envPrefix, "", "PORT", base.Port)
-	o.Database = environments.GetString(envPrefix, "", "NAME", base.Database)
-	o.Username = environments.GetString(envPrefix, "", "USERNAME", base.Username)
-	o.Password = environments.GetString(envPrefix, "", "PASSWORD", base.Password)
+	o.Host = dbEnv("HOST", base.Host)
+	o.Port = dbInt("PORT", base.Port)
+	o.Database = dbEnv("NAME", base.Database)
+	o.Username = dbEnv("USERNAME", base.Username)
+	o.Password = dbEnv("PASSWORD", base.Password)
 
-	o.PoolMinSize = environments.GetInt(envPrefix, "", "POOL_MIN_SIZE", base.PoolMinSize)
-	o.PoolMaxSize = environments.GetInt(envPrefix, "", "POOL_MAX_SIZE", base.PoolMaxSize)
+	o.PoolMinSize = dbInt("POOL_MIN_SIZE", base.PoolMinSize)
+	o.PoolMaxSize = dbInt("POOL_MAX_SIZE", base.PoolMaxSize)
 
-	o.CommandTimeout = time.Duration(
-		environments.GetInt(envPrefix, "", "COMMAND_TIMEOUT_SECONDS", int(base.CommandTimeout/time.Second))) * time.Second
-	o.ConnectionTimeout = time.Duration(
-		environments.GetInt(envPrefix, "", "CONNECTION_TIMEOUT_SECONDS", int(base.ConnectionTimeout/time.Second))) * time.Second
+	o.CommandTimeout = time.Duration(dbInt("COMMAND_TIMEOUT_SECONDS", int(base.CommandTimeout/time.Second))) * time.Second
+	o.ConnectionTimeout = time.Duration(dbInt("CONNECTION_TIMEOUT_SECONDS", int(base.ConnectionTimeout/time.Second))) * time.Second
 
-	o.RetryEnabled = environments.GetBool(envPrefix, "", "RETRY_ENABLED", base.RetryEnabled)
-	o.RetryMaxCount = environments.GetInt(envPrefix, "", "RETRY_MAX_COUNT", base.RetryMaxCount)
-	o.RetryBaseDelay = time.Duration(
-		environments.GetInt(envPrefix, "", "RETRY_BASE_DELAY_MS", int(base.RetryBaseDelay/time.Millisecond))) * time.Millisecond
+	o.RetryEnabled = dbBool("RETRY_ENABLED", base.RetryEnabled)
+	o.RetryMaxCount = dbInt("RETRY_MAX_COUNT", base.RetryMaxCount)
+	o.RetryBaseDelay = time.Duration(dbInt("RETRY_BASE_DELAY_MS", int(base.RetryBaseDelay/time.Millisecond))) * time.Millisecond
 
-	o.SlowQuery = time.Duration(
-		environments.GetInt(envPrefix, "", "SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
+	o.SlowQuery = time.Duration(dbInt("SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
+}
+
+// dbEnv reads a HELLNET_DATABASE_<name> env var (with generic HELLNET_<name>
+// fallback), defaulting to def.
+func dbEnv(name, def string) string {
+	if v := environments.Get(envPrefix + name, ""); v != "" {
+		return v
+	}
+	return environments.Get("HELLNET_"+name, def)
+}
+
+// dbInt reads an int HELLNET_DATABASE_<name> env var (HELLNET_<name> fallback).
+func dbInt(name string, def int) int {
+	if environments.Get(envPrefix+name, "") != "" {
+		return environments.GetInt(envPrefix+name, strconv.Itoa(def))
+	}
+	return environments.GetInt("HELLNET_"+name, strconv.Itoa(def))
+}
+
+// dbBool reads a bool HELLNET_DATABASE_<name> env var (HELLNET_<name> fallback).
+func dbBool(name string, def bool) bool {
+	if environments.Get(envPrefix+name, "") != "" {
+		return environments.GetBool(envPrefix+name, strconv.FormatBool(def))
+	}
+	return environments.GetBool("HELLNET_"+name, strconv.FormatBool(def))
 }
 
 // loadEnvFiles loads .env files through hellnet-lib-environments (an explicit
@@ -227,6 +251,26 @@ type DB struct {
 	conn
 	pool  Pool
 	retry RetryPolicy
+	ops   telemetry.Client
+}
+
+// WithTelemetry attaches a telemetry client so every query/execute emits an
+// OTel span (db.query) and pool metrics are reported. Optional: a nil client
+// keeps the library working without instrumentation.
+func (db *DB) WithTelemetry(ops telemetry.Client) *DB {
+	db.ops = ops
+	return db
+}
+
+// withSpan runs fn inside an OTel span named after the operation when a
+// telemetry client is attached; otherwise it runs fn directly.
+func (db *DB) withSpan(operation string, fn func() error) error {
+	if db == nil || db.ops == nil {
+		return fn()
+	}
+	return db.ops.Span(context.Background(), "db."+operation, func(context.Context) error {
+		return fn()
+	})
 }
 
 // withDefaults fills zero-valued fields of opts with DefaultOptions so a caller

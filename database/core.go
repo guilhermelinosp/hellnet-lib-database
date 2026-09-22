@@ -298,30 +298,47 @@ func retried[T any](ctx context.Context, p RetryPolicy, fn func() (T, error)) (T
 // Execute runs a command (INSERT/UPDATE/DELETE/DDL) and returns the number of
 // affected rows. Transient failures are retried when retry is enabled. Every
 // retry attempt fires QueryHooks again (one before/after pair per attempt).
+// Emits a db.execute OTel span when telemetry is attached.
 func (db *DB) Execute(sql string, args ...any) (int64, error) {
-	return retried(db.base(), db.retry, func() (int64, error) {
-		return db.conn.Execute(sql, args...)
+	var n int64
+	err := db.withSpan("execute", func() error {
+		var err error
+		n, err = retried(db.base(), db.retry, func() (int64, error) {
+			return db.conn.Execute(sql, args...)
+		})
+		return err
 	})
+	return n, err
 }
 
 // Query runs a SELECT and maps every row into a T. Transient failures are
 // retried when retry is enabled. Every retry attempt fires QueryHooks again.
+// Emits a db.query OTel span when telemetry is attached.
 func Query[T any](db *DB, sql string, args ...any) ([]T, error) {
-	return retried(db.base(), db.retry, func() ([]T, error) {
-		return runQuery[T](&db.conn, sql, args...)
+	var out []T
+	err := db.withSpan("query", func() error {
+		var err error
+		out, err = retried(db.base(), db.retry, func() ([]T, error) {
+			return runQuery[T](&db.conn, sql, args...)
+		})
+		return err
 	})
+	return out, err
 }
 
 // QueryRow runs a query expected to return at most one row. Transient failures
 // are retried when retry is enabled. Every retry attempt fires QueryHooks again.
+// Emits a db.query OTel span when telemetry is attached.
 func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 	var out T
 	var found bool
 
-	err := db.retry.do(db.base(), func() error {
-		v, f, err := runQueryRow[T](&db.conn, sql, args...)
-		out, found = v, f
-		return err
+	err := db.withSpan("query", func() error {
+		return db.retry.do(db.base(), func() error {
+			v, f, err := runQueryRow[T](&db.conn, sql, args...)
+			out, found = v, f
+			return err
+		})
 	})
 
 	return out, found, err
