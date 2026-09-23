@@ -35,11 +35,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// envPrefix is the prefix of every HELLNET_DATABASE_* variable.
-const envPrefix = "HELLNET_DATABASE_"
+// envPrefix is the prefix of every database configuration variable.
+const envPrefix = "DATABASE_"
 
 // Options configures the database connection. All fields are populated from
-// environment variables (HELLNET_DATABASE_*) via LoadFromEnv, or set
+// environment variables (DATABASE_*) via LoadFromEnv, or set
 // explicitly.
 type Options struct {
 	// ── Connection ──────────────────────────────────────────────
@@ -93,7 +93,7 @@ func DefaultOptions() Options {
 	}
 }
 
-// fromEnv overlays HELLNET_DATABASE_* environment variables on top of the
+// fromEnv overlays DATABASE_* environment variables on top of the
 // provided base Options. It mirrors the env-first convention used across the
 // other Hellnet libs (hellnet-lib-kafka, hellnet-lib-cache, hellnet-lib-telemetry).
 func (o *Options) fromEnv(base Options) {
@@ -118,9 +118,9 @@ func (o *Options) fromEnv(base Options) {
 }
 
 // splitHostPort accepts both the legacy pair of variables
-// (HELLNET_DATABASE_HOST=postgres, HELLNET_DATABASE_PORT=5432) and an endpoint
-// in HELLNET_DATABASE_HOST (postgres:5432). An embedded port takes precedence
-// over HELLNET_DATABASE_PORT. IPv6 endpoints must use the standard bracketed
+// (DATABASE_HOST=postgres, DATABASE_PORT=5432) and an endpoint
+// in DATABASE_HOST (postgres:5432). An embedded port takes precedence
+// over DATABASE_PORT. IPv6 endpoints must use the standard bracketed
 // form, for example [::1]:5432.
 func splitHostPort(host string, port int) (string, int) {
 	host = strings.TrimSpace(host)
@@ -135,42 +135,32 @@ func splitHostPort(host string, port int) (string, int) {
 	return parsedHost, parsedPortNumber
 }
 
-// dbEnv reads a HELLNET_DATABASE_<name> env var (with generic HELLNET_<name>
-// fallback), defaulting to def.
+// dbEnv reads a DATABASE_<name> env var, defaulting to def.
 func dbEnv(name, def string) string {
-	if v := environments.Get(envPrefix+name, ""); v != "" {
-		return v
-	}
-	return environments.Get("HELLNET_"+name, def)
+	return environments.GetString("", "", envPrefix+name, def)
 }
 
-// dbInt reads an int HELLNET_DATABASE_<name> env var (HELLNET_<name> fallback).
+// dbInt reads an int DATABASE_<name> env var.
 func dbInt(name string, def int) int {
-	if environments.Get(envPrefix+name, "") != "" {
-		return environments.GetInt(envPrefix+name, strconv.Itoa(def))
-	}
-	return environments.GetInt("HELLNET_"+name, strconv.Itoa(def))
+	return environments.GetInt(envPrefix+name, strconv.Itoa(def))
 }
 
-// dbBool reads a bool HELLNET_DATABASE_<name> env var (HELLNET_<name> fallback).
+// dbBool reads a bool DATABASE_<name> env var.
 func dbBool(name string, def bool) bool {
-	if environments.Get(envPrefix+name, "") != "" {
-		return environments.GetBool(envPrefix+name, strconv.FormatBool(def))
-	}
-	return environments.GetBool("HELLNET_"+name, strconv.FormatBool(def))
+	return environments.GetBool(envPrefix+name, strconv.FormatBool(def))
 }
 
 // loadEnvFiles loads .env files through hellnet-lib-environments (an explicit
-// file pointed by HELLNET_DATABASE_ENV_FILE, the shared HELLNET_ENV_FILE, or
+// file pointed by DATABASE_ENV_FILE, the shared ENV_FILE, or
 // the conventional ./.env) so callers only need OpenFromEnv/LoadFromEnv. The
 // error is ignored on purpose: a missing env file is not fatal (explicit
 // Options or already-set environment variables still work). This mirrors the
 // other Hellnet libs.
 func loadEnvFiles() {
-	_ = environments.LoadDotEnv("HELLNET_DATABASE_ENV_FILE", "HELLNET_ENV_FILE")
+	_ = environments.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
 }
 
-// LoadFromEnv loads HELLNET_DATABASE_* environment variables (plus a .env file
+// LoadFromEnv loads DATABASE_* environment variables (plus a .env file
 // via loadEnvFiles) into Options, starting from DefaultOptions as the fallback
 // for any unset value. It is fully self-contained: the caller does not need to
 // load env files beforehand.
@@ -337,13 +327,13 @@ func defaultRetryEnabled(o *Options, d Options) {
 
 // New creates a DB from explicit options, or from the environment when called
 // with a single ctx plus no options (env-first, mirroring hellnet-lib-cache's
-// New). In the no-options form it loads HELLNET_DATABASE_* (and a .env file)
+// New). In the no-options form it loads DATABASE_* (and a .env file)
 // via LoadFromEnv. The context is captured ONCE here and propagated internally
 // to every later operation (per-statement timeouts derive from it) — public
 // methods do not take a context.Context. No connection is established yet;
 // call Ping to verify.
 // New follows the zero-config constructor pattern shared by the Hellnet libs:
-// it loads .env and resolves every option from HELLNET_DATABASE_* (with
+// it loads .env and resolves every option from DATABASE_*.
 // HELLNET_* fallback) internally, so callers just write:
 //
 //	db, err := database.New()

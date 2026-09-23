@@ -22,10 +22,10 @@ import (
 //
 // Usage (cluster namespace tools, via kubectl port-forward):
 //
-//	export HELLNET_TEST_PG_HOST=localhost
-//	export HELLNET_TEST_PG_PORT=5433
-//	export HELLNET_TEST_PG_USER=postgres
-//	export HELLNET_TEST_PG_PASSWORD=$(kubectl get secret postgres-credentials -n tools -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
+//	export TEST_PG_HOST=localhost
+//	export TEST_PG_PORT=5433
+//	export TEST_PG_USER=postgres
+//	export TEST_PG_PASSWORD=$(kubectl get secret postgres-credentials -n tools -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
 //	go test -tags integration -v -count=1 ./database/
 //
 // Defaults target localhost:5432/postgres as user postgres.
@@ -33,12 +33,12 @@ import (
 func integrationOptions(t *testing.T) Options {
 	t.Helper()
 
-	host := envOr("HELLNET_TEST_PG_HOST", "localhost")
-	port := envOr("HELLNET_TEST_PG_PORT", "5432")
-	user := envOr("HELLNET_TEST_PG_USER", "postgres")
-	pass := os.Getenv("HELLNET_TEST_PG_PASSWORD")
+	host := envOr("TEST_PG_HOST", "localhost")
+	port := envOr("TEST_PG_PORT", "5432")
+	user := envOr("TEST_PG_USER", "postgres")
+	pass := os.Getenv("TEST_PG_PASSWORD")
 	if pass == "" {
-		t.Skip("HELLNET_TEST_PG_PASSWORD not set")
+		t.Skip("TEST_PG_PASSWORD not set")
 	}
 
 	var portNum int
@@ -49,7 +49,7 @@ func integrationOptions(t *testing.T) Options {
 	return Options{
 		Host:              host,
 		Port:              portNum,
-		Database:          envOr("HELLNET_TEST_PG_NAME", "postgres"),
+		Database:          envOr("TEST_PG_NAME", "postgres"),
 		Username:          user,
 		Password:          pass,
 		PoolMinSize:       1,
@@ -593,8 +593,8 @@ func TestIntegrationConnTransactional(t *testing.T) {
 //
 // Setup padrão (namespace tools, via kubectl port-forward):
 //
-//	export HELLNET_TEST_PG_PORT=15432   # kubectl port-forward -n tools svc/postgres 15432:5432 &
-//	export HELLNET_TEST_PG_PASSWORD=$(kubectl get secret postgres-credentials -n tools -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
+//	export TEST_PG_PORT=15432   # kubectl port-forward -n tools svc/postgres 15432:5432 &
+//	export TEST_PG_PASSWORD=$(kubectl get secret postgres-credentials -n tools -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)
 func TestIntegrationEnableMetrics(t *testing.T) {
 	db := openIntegrationDB(t)
 	resetOrdersTable(t, db)

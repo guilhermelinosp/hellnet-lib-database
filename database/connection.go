@@ -102,7 +102,7 @@ func Connect(ctx context.Context, opts Options) (*Conn, error) {
 	}, nil
 }
 
-// ConnectFromEnv loads options from HELLNET_DATABASE_* variables (and a .env
+// ConnectFromEnv loads options from DATABASE_* variables (and a .env
 // file via LoadFromEnv) and opens a single standalone connection. The env
 // loading is fully contained in the library. Like Connect, it captures ctx once.
 func ConnectFromEnv(ctx context.Context) (*Conn, error) {

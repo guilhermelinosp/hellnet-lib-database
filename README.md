@@ -58,11 +58,11 @@ go get github.com/guilhermelinosp/hellnet-lib-database/database
 ### Via environment variables (recomendado)
 
 ```bash
-export HELLNET_DATABASE_HOST=localhost
-export HELLNET_DATABASE_PORT=5432
-export HELLNET_DATABASE_NAME=mydb
-export HELLNET_DATABASE_USERNAME=postgres
-export HELLNET_DATABASE_PASSWORD=password
+export DATABASE_HOST=localhost
+export DATABASE_PORT=5432
+export DATABASE_NAME=mydb
+export DATABASE_USERNAME=postgres
+export DATABASE_PASSWORD=password
 ```
 
 ```go
@@ -73,7 +73,7 @@ db, err := database.OpenFromEnv(ctx)
 ```
 
 > **Env-first é self-contained.** `OpenFromEnv`/`LoadFromEnv` carregam o `.env`
-> automaticamente (via `HELLNET_DATABASE_ENV_FILE`, `HELLNET_ENV_FILE` ou o
+> automaticamente (via `DATABASE_ENV_FILE`, `ENV_FILE` ou o
 > convencional `.env`/`./.env`) usando `hellnet-lib-environments`. O chamador
 > **não** precisa chamar nenhum loader de `.env` — basta definir as variáveis
 > (ou o arquivo) e abrir. Isso espelha o padrão das demais libs Hellnet
@@ -285,19 +285,19 @@ fmt.Println(page.HasNextPage())
 
 | Variável | Obrigatório | Padrão | Descrição |
 |----------|-------------|--------|-----------|
-| `HELLNET_DATABASE_HOST` | ❌ | `localhost` | Host ou endpoint `host:porta` do PostgreSQL |
-| `HELLNET_DATABASE_PORT` | ❌ | `5432` | Porta |
-| `HELLNET_DATABASE_NAME` | ✅ | — | Nome do banco |
-| `HELLNET_DATABASE_USERNAME` | ✅ | — | Usuário |
-| `HELLNET_DATABASE_PASSWORD` | ✅ | — | Senha |
-| `HELLNET_DATABASE_POOL_MIN_SIZE` | ❌ | `10` | Pool mínimo |
-| `HELLNET_DATABASE_POOL_MAX_SIZE` | ❌ | `100` | Pool máximo |
-| `HELLNET_DATABASE_COMMAND_TIMEOUT_SECONDS` | ❌ | `30` | Timeout por comando |
-| `HELLNET_DATABASE_CONNECTION_TIMEOUT_SECONDS` | ❌ | `15` | Timeout de conexão |
-| `HELLNET_DATABASE_RETRY_ENABLED` | ❌ | `true` | Habilitar retry |
-| `HELLNET_DATABASE_RETRY_MAX_COUNT` | ❌ | `3` | Máximo de retry attempts |
-| `HELLNET_DATABASE_RETRY_BASE_DELAY_MS` | ❌ | `100` | Delay base do backoff |
-| `HELLNET_DATABASE_SLOW_QUERY_MS` | ❌ | `500` | Limiar de log de query lenta |
+| `DATABASE_HOST` | ❌ | `localhost` | Host ou endpoint `host:porta` do PostgreSQL |
+| `DATABASE_PORT` | ❌ | `5432` | Porta |
+| `DATABASE_NAME` | ✅ | — | Nome do banco |
+| `DATABASE_USERNAME` | ✅ | — | Usuário |
+| `DATABASE_PASSWORD` | ✅ | — | Senha |
+| `DATABASE_POOL_MIN_SIZE` | ❌ | `10` | Pool mínimo |
+| `DATABASE_POOL_MAX_SIZE` | ❌ | `100` | Pool máximo |
+| `DATABASE_COMMAND_TIMEOUT_SECONDS` | ❌ | `30` | Timeout por comando |
+| `DATABASE_CONNECTION_TIMEOUT_SECONDS` | ❌ | `15` | Timeout de conexão |
+| `DATABASE_RETRY_ENABLED` | ❌ | `true` | Habilitar retry |
+| `DATABASE_RETRY_MAX_COUNT` | ❌ | `3` | Máximo de retry attempts |
+| `DATABASE_RETRY_BASE_DELAY_MS` | ❌ | `100` | Delay base do backoff |
+| `DATABASE_SLOW_QUERY_MS` | ❌ | `500` | Limiar de log de query lenta |
 
 ---
 
@@ -318,7 +318,7 @@ Retry automático com exponential backoff (`baseDelay << tentativa`). Erros perm
 
 Desabilitar por env:
 ```bash
-export HELLNET_DATABASE_RETRY_ENABLED=false
+export DATABASE_RETRY_ENABLED=false
 ```
 
 ---
@@ -377,9 +377,9 @@ make test           # unitários (sem dependências externas)
 make test-race      # unitários com race detector
 
 # Integração contra um PostgreSQL real (build tag `integration`):
-export HELLNET_TEST_PG_HOST=localhost HELLNET_TEST_PG_PORT=5432 \
-       HELLNET_TEST_PG_USER=postgres HELLNET_TEST_PG_NAME=postgres \
-       HELLNET_TEST_PG_PASSWORD=<senha>
+export TEST_PG_HOST=localhost TEST_PG_PORT=5432 \
+       TEST_PG_USER=postgres TEST_PG_NAME=postgres \
+       TEST_PG_PASSWORD=<senha>
 go test -tags integration -race ./database/
 ```
 

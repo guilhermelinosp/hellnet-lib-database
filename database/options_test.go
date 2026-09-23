@@ -33,15 +33,15 @@ func TestDefaultOptions(t *testing.T) {
 }
 
 func TestLoadFromEnv(t *testing.T) {
-	t.Setenv("HELLNET_DATABASE_HOST", "pg.internal")
-	t.Setenv("HELLNET_DATABASE_PORT", "6543")
-	t.Setenv("HELLNET_DATABASE_NAME", "orders")
-	t.Setenv("HELLNET_DATABASE_USERNAME", "app")
-	t.Setenv("HELLNET_DATABASE_PASSWORD", "secret")
-	t.Setenv("HELLNET_DATABASE_POOL_MAX_SIZE", "42")
-	t.Setenv("HELLNET_DATABASE_RETRY_ENABLED", "false")
-	t.Setenv("HELLNET_DATABASE_RETRY_BASE_DELAY_MS", "250")
-	t.Setenv("HELLNET_DATABASE_COMMAND_TIMEOUT_SECONDS", "7")
+	t.Setenv("DATABASE_HOST", "pg.internal")
+	t.Setenv("DATABASE_PORT", "6543")
+	t.Setenv("DATABASE_NAME", "orders")
+	t.Setenv("DATABASE_USERNAME", "app")
+	t.Setenv("DATABASE_PASSWORD", "secret")
+	t.Setenv("DATABASE_POOL_MAX_SIZE", "42")
+	t.Setenv("DATABASE_RETRY_ENABLED", "false")
+	t.Setenv("DATABASE_RETRY_BASE_DELAY_MS", "250")
+	t.Setenv("DATABASE_COMMAND_TIMEOUT_SECONDS", "7")
 
 	o := LoadFromEnv()
 
@@ -66,8 +66,8 @@ func TestLoadFromEnv(t *testing.T) {
 }
 
 func TestLoadFromEnvAcceptsHostWithPort(t *testing.T) {
-	t.Setenv("HELLNET_DATABASE_HOST", "postgres.hellnet.com.br:5432")
-	t.Setenv("HELLNET_DATABASE_PORT", "6543")
+	t.Setenv("DATABASE_HOST", "postgres.hellnet.com.br:5432")
+	t.Setenv("DATABASE_PORT", "6543")
 
 	o := LoadFromEnv()
 
@@ -80,7 +80,7 @@ func TestLoadFromEnvAcceptsHostWithPort(t *testing.T) {
 }
 
 func TestLoadFromEnvAcceptsBracketedIPv6WithPort(t *testing.T) {
-	t.Setenv("HELLNET_DATABASE_HOST", "[::1]:5432")
+	t.Setenv("DATABASE_HOST", "[::1]:5432")
 
 	o := LoadFromEnv()
 
@@ -90,16 +90,16 @@ func TestLoadFromEnvAcceptsBracketedIPv6WithPort(t *testing.T) {
 }
 
 // TestLoadFromEnvLoadsDotEnv ensures env-first is self-contained: LoadFromEnv
-// loads a .env file pointed by HELLNET_DATABASE_ENV_FILE without the caller
+// loads a .env file pointed by DATABASE_ENV_FILE without the caller
 // having to call any external DotEnv loader. Mirrors the other Hellnet libs.
 func TestLoadFromEnvLoadsDotEnv(t *testing.T) {
 	f := t.TempDir() + "/db.env"
-	if err := os.WriteFile(f, []byte("HELLNET_DATABASE_NAME=fromdotenv\n"), 0o600); err != nil {
+	if err := os.WriteFile(f, []byte("DATABASE_NAME=fromdotenv\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HELLNET_DATABASE_ENV_FILE", f)
+	t.Setenv("DATABASE_ENV_FILE", f)
 	// The loaded var must not leak into other tests.
-	defer os.Unsetenv("HELLNET_DATABASE_NAME")
+	defer os.Unsetenv("DATABASE_NAME")
 
 	o := LoadFromEnv()
 	if o.Database != "fromdotenv" {

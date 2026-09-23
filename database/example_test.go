@@ -15,7 +15,7 @@ type Order struct {
 	CreatedAt time.Time `db:"created_at"`
 }
 
-// ExampleOpenFromEnv connects using HELLNET_DATABASE_* variables.
+// ExampleOpenFromEnv connects using DATABASE_* variables.
 func ExampleOpenFromEnv() {
 	// Context is captured once at construction and propagated internally.
 	db, err := OpenFromEnv(context.Background(), nil)

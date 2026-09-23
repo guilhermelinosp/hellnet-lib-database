@@ -29,11 +29,11 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      HELLNET_TEST_PG_HOST: localhost
-      HELLNET_TEST_PG_PORT: "5432"
-      HELLNET_TEST_PG_USER: postgres
-      HELLNET_TEST_PG_PASSWORD: postgres
-      HELLNET_TEST_PG_NAME: postgres
+      TEST_PG_HOST: localhost
+      TEST_PG_PORT: "5432"
+      TEST_PG_USER: postgres
+      TEST_PG_PASSWORD: postgres
+      TEST_PG_NAME: postgres
     steps:
       - uses: actions/checkout@v7
 
