@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -35,6 +36,7 @@ type conn struct {
 	o     Options
 	ctx   context.Context
 	hooks *hookRegistry
+	ops   telemetry.Client
 }
 
 // newConn monta um conn raiz (New/Connect) com o registro de hooks derivado
@@ -48,7 +50,14 @@ func newConn(r runner, o Options, ctx context.Context) conn {
 // herdando opções/base e COMPARTILHANDO o registry de hooks do pai: métricas
 // habilitadas tardiamente no DB alcançam todas as transações/conexões novas.
 func (c *conn) derive(r runner) conn {
-	return conn{r: r, o: c.o, ctx: c.base(), hooks: c.hooks}
+	return conn{r: r, o: c.o, ctx: c.base(), hooks: c.hooks, ops: c.ops}
+}
+
+func (c *conn) withSpan(operation string, fn func() error) error {
+	if c == nil || c.ops == nil {
+		return fn()
+	}
+	return c.ops.WithSpan("db."+operation, func(context.Context) error { return fn() })
 }
 
 // observed devolve o MetricsCollector observando este conn (ou nil).

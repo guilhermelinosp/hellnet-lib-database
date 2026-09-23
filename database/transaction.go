@@ -21,20 +21,50 @@ type Tx struct {
 	conn
 }
 
+// Execute runs a command inside the transaction and emits db.execute.
+func (tx *Tx) Execute(sql string, args ...any) (int64, error) {
+	var n int64
+	err := tx.conn.withSpan("execute", func() error {
+		var err error
+		n, err = tx.conn.Execute(sql, args...)
+		return err
+	})
+	return n, err
+}
+
 // TxQuery maps every row into T. Rows see the transaction's uncommitted state.
 func TxQuery[T any](tx *Tx, sql string, args ...any) ([]T, error) {
-	return runQuery[T](&tx.conn, sql, args...)
+	var out []T
+	err := tx.conn.withSpan("query", func() error {
+		var err error
+		out, err = runQuery[T](&tx.conn, sql, args...)
+		return err
+	})
+	return out, err
 }
 
 // TxQueryRow runs a query expected to return at most one row inside the
 // transaction.
 func TxQueryRow[T any](tx *Tx, sql string, args ...any) (T, bool, error) {
-	return runQueryRow[T](&tx.conn, sql, args...)
+	var out T
+	var found bool
+	err := tx.conn.withSpan("query", func() error {
+		var err error
+		out, found, err = runQueryRow[T](&tx.conn, sql, args...)
+		return err
+	})
+	return out, found, err
 }
 
 // TxScalar scans a single-value result inside the transaction.
 func TxScalar[T any](tx *Tx, sql string, args ...any) (T, error) {
-	return runScalar[T](&tx.conn, sql, args...)
+	var out T
+	err := tx.conn.withSpan("query", func() error {
+		var err error
+		out, err = runScalar[T](&tx.conn, sql, args...)
+		return err
+	})
+	return out, err
 }
 
 // Commit commits the transaction. Use it only for transactions started via

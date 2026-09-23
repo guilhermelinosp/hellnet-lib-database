@@ -65,7 +65,7 @@ func integrationOptions(t *testing.T) Options {
 func openIntegrationDB(t *testing.T) *DB {
 	t.Helper()
 	// Context is captured once at construction and propagated internally.
-	db, err := New(context.Background(), integrationOptions(t))
+	db, err := New(context.Background(), nil, integrationOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestIntegrationTransientRetryReal(t *testing.T) {
 	opts.RetryBaseDelay = 50 * time.Millisecond
 
 	ctx := context.Background()
-	db, err := New(ctx, opts)
+	db, err := New(ctx, nil, opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestIntegrationSlowQueryLogCapture(t *testing.T) {
 	slog.SetDefault(slog.New(capture))
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 
-	db, err := New(context.Background(), opts)
+	db, err := New(context.Background(), nil, opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -271,26 +271,15 @@ type DB struct {
 	conn
 	pool  Pool
 	retry RetryPolicy
-	ops   telemetry.Client
-}
-
-// WithTelemetry attaches a telemetry client so every query/execute emits an
-// OTel span (db.query) and pool metrics are reported. Optional: a nil client
-// keeps the library working without instrumentation.
-func (db *DB) WithTelemetry(ops telemetry.Client) *DB {
-	db.ops = ops
-	return db
 }
 
 // withSpan runs fn inside an OTel span named after the operation when a
 // telemetry client is attached; otherwise it runs fn directly.
 func (db *DB) withSpan(operation string, fn func() error) error {
-	if db == nil || db.ops == nil {
+	if db == nil {
 		return fn()
 	}
-	return db.ops.Span(context.Background(), "db."+operation, func(context.Context) error {
-		return fn()
-	})
+	return db.conn.withSpan(operation, fn)
 }
 
 // withDefaults fills zero-valued fields of opts with DefaultOptions so a caller
@@ -362,14 +351,19 @@ func defaultRetryEnabled(o *Options, d Options) {
 // A nil context degrades to Background (never panics). Options can be supplied
 // explicitly via NewWithOptions; the context is captured once at construction
 // and propagated internally.
-func New(opts ...Options) (*DB, error) {
+func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
 	o := Options{}
 	if len(opts) > 0 {
 		o = opts[0]
 	} else {
 		o = LoadFromEnv()
 	}
-	return newDB(context.Background(), o)
+	db, err := newDB(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	db.conn.ops = ops
+	return db, nil
 }
 
 // NewWithOptions builds a DB from explicit Options plus a construction
@@ -428,8 +422,8 @@ func newDB(ctx context.Context, o Options) (*DB, error) {
 
 // MustNew is like New but panics on failure. Useful at service startup where a
 // misconfiguration should fail fast.
-func MustNew(opts ...Options) *DB {
-	db, err := New(opts...)
+func MustNew(ctx context.Context, ops telemetry.Client, opts ...Options) *DB {
+	db, err := New(ctx, ops, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -440,8 +434,8 @@ func MustNew(opts ...Options) *DB {
 // the DB. It is the equivalent of the .NET AddHellnetDatabase() env-first
 // overload and is a thin wrapper over New. The env loading is fully contained
 // in the library — no external DotEnv call is required by the caller.
-func OpenFromEnv() (*DB, error) {
-	return New()
+func OpenFromEnv(ctx context.Context, ops telemetry.Client) (*DB, error) {
+	return New(ctx, ops)
 }
 
 // Close releases the underlying pool.

@@ -35,13 +35,13 @@ Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde
 
 ```go
 ctx := context.Background()  // cria o crachá do estagiário: de quem é o pedido e até quando vale
-db, err := database.New(ctx) // contrata o estagiário: lê as env vars e abre o caminho até o caderno
+db, err := database.New(ctx, ops) // lê as env vars e propaga telemetry com o contexto da aplicação
 ```
 
 Linha por linha:
 
 - `ctx := context.Background()` — cria um **contexto**: pense nele como o crachá do estagiário, que diz de quem é o pedido e até quando ele vale (prazos e cancelamentos). Você cria UMA vez, no início da aplicação;
-- `db, err := database.New(ctx)` — contrata o **estagiário**: ele lê as configurações (variáveis de ambiente), abre o caminho até o caderno e devolve um `db` pronto para usar; o `err` avisa se algo deu errado na contratação.
+- `db, err := database.New(ctx, ops)` — lê as configurações, abre o pool e propaga telemetry; o `err` avisa se algo deu errado na contratação.
 
 ---
 
