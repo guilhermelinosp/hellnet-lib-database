@@ -142,12 +142,12 @@ func dbEnv(name, def string) string {
 
 // dbInt reads an int DATABASE_<name> env var.
 func dbInt(name string, def int) int {
-	return environments.GetInt("", "", envPrefix+name, def)
+	return environments.GetInt(envPrefix+name, strconv.Itoa(def))
 }
 
 // dbBool reads a bool DATABASE_<name> env var.
 func dbBool(name string, def bool) bool {
-	return environments.GetBool("", "", envPrefix+name, def)
+	return environments.GetBool(envPrefix+name, strconv.FormatBool(def))
 }
 
 // loadEnvFiles loads .env files through hellnet-lib-environments (an explicit
