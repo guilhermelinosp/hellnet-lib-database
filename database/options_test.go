@@ -65,6 +65,30 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAcceptsHostWithPort(t *testing.T) {
+	t.Setenv("HELLNET_DATABASE_HOST", "postgres.hellnet.com.br:5432")
+	t.Setenv("HELLNET_DATABASE_PORT", "6543")
+
+	o := LoadFromEnv()
+
+	if o.Host != "postgres.hellnet.com.br" || o.Port != 5432 {
+		t.Errorf("endpoint = %s:%d, want postgres.hellnet.com.br:5432", o.Host, o.Port)
+	}
+	if got := o.dsn(); got != "postgres://postgres.hellnet.com.br:5432/" {
+		t.Errorf("dsn = %q, want postgres://postgres.hellnet.com.br:5432/", got)
+	}
+}
+
+func TestLoadFromEnvAcceptsBracketedIPv6WithPort(t *testing.T) {
+	t.Setenv("HELLNET_DATABASE_HOST", "[::1]:5432")
+
+	o := LoadFromEnv()
+
+	if o.Host != "::1" || o.Port != 5432 {
+		t.Errorf("endpoint = %s:%d, want [::1]:5432", o.Host, o.Port)
+	}
+}
+
 // TestLoadFromEnvLoadsDotEnv ensures env-first is self-contained: LoadFromEnv
 // loads a .env file pointed by HELLNET_DATABASE_ENV_FILE without the caller
 // having to call any external DotEnv loader. Mirrors the other Hellnet libs.

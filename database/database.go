@@ -16,13 +16,14 @@
 package database
 
 import (
-	"strconv"
 	"context"
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
@@ -98,6 +99,7 @@ func DefaultOptions() Options {
 func (o *Options) fromEnv(base Options) {
 	o.Host = dbEnv("HOST", base.Host)
 	o.Port = dbInt("PORT", base.Port)
+	o.Host, o.Port = splitHostPort(o.Host, o.Port)
 	o.Database = dbEnv("NAME", base.Database)
 	o.Username = dbEnv("USERNAME", base.Username)
 	o.Password = dbEnv("PASSWORD", base.Password)
@@ -115,10 +117,28 @@ func (o *Options) fromEnv(base Options) {
 	o.SlowQuery = time.Duration(dbInt("SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
 }
 
+// splitHostPort accepts both the legacy pair of variables
+// (HELLNET_DATABASE_HOST=postgres, HELLNET_DATABASE_PORT=5432) and an endpoint
+// in HELLNET_DATABASE_HOST (postgres:5432). An embedded port takes precedence
+// over HELLNET_DATABASE_PORT. IPv6 endpoints must use the standard bracketed
+// form, for example [::1]:5432.
+func splitHostPort(host string, port int) (string, int) {
+	host = strings.TrimSpace(host)
+	parsedHost, parsedPort, err := net.SplitHostPort(host)
+	if err != nil {
+		return host, port
+	}
+	parsedPortNumber, err := strconv.Atoi(parsedPort)
+	if err != nil {
+		return host, port
+	}
+	return parsedHost, parsedPortNumber
+}
+
 // dbEnv reads a HELLNET_DATABASE_<name> env var (with generic HELLNET_<name>
 // fallback), defaulting to def.
 func dbEnv(name, def string) string {
-	if v := environments.Get(envPrefix + name, ""); v != "" {
+	if v := environments.Get(envPrefix+name, ""); v != "" {
 		return v
 	}
 	return environments.Get("HELLNET_"+name, def)
@@ -190,7 +210,7 @@ func Validate(o Options) error {
 func (o Options) dsn() string {
 	u := url.URL{
 		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", o.Host, o.Port),
+		Host:   net.JoinHostPort(o.Host, strconv.Itoa(o.Port)),
 		Path:   "/" + o.Database,
 	}
 	if o.Username != "" || o.Password != "" {

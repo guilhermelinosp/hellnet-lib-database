@@ -285,7 +285,7 @@ fmt.Println(page.HasNextPage())
 
 | Variável | Obrigatório | Padrão | Descrição |
 |----------|-------------|--------|-----------|
-| `HELLNET_DATABASE_HOST` | ❌ | `localhost` | Host do PostgreSQL |
+| `HELLNET_DATABASE_HOST` | ❌ | `localhost` | Host ou endpoint `host:porta` do PostgreSQL |
 | `HELLNET_DATABASE_PORT` | ❌ | `5432` | Porta |
 | `HELLNET_DATABASE_NAME` | ✅ | — | Nome do banco |
 | `HELLNET_DATABASE_USERNAME` | ✅ | — | Usuário |
