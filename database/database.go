@@ -137,7 +137,7 @@ func splitHostPort(host string, port int) (string, int) {
 
 // dbEnv reads a DATABASE_<name> env var, defaulting to def.
 func dbEnv(name, def string) string {
-	return environments.GetString("", "", envPrefix+name, def)
+	return environments.Get(envPrefix+name, def)
 }
 
 // dbInt reads an int DATABASE_<name> env var.
