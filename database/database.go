@@ -26,8 +26,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"time"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 
 	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
 	"github.com/jackc/pgx/v5"
@@ -74,14 +75,9 @@ type Options struct {
 	HideQueryArgs bool
 }
 
-// DefaultOptions returns the default configuration.
-func DefaultOptions() Options {
+// Default returns the default configuration.
+func Default() Options {
 	return Options{
-		Host:              "localhost",
-		Port:              5432,
-		Database:          "",
-		Username:          "",
-		Password:          "",
 		PoolMinSize:       10,
 		PoolMaxSize:       100,
 		CommandTimeout:    30 * time.Second,
@@ -96,25 +92,21 @@ func DefaultOptions() Options {
 // fromEnv overlays DATABASE_* environment variables on top of the
 // provided base Options. It mirrors the env-first convention used across the
 // other Hellnet libs (hellnet-lib-kafka, hellnet-lib-cache, hellnet-lib-telemetry).
-func (o *Options) fromEnv(base Options) {
-	o.Host = dbEnv("HOST", base.Host)
-	o.Port = dbInt("PORT", base.Port)
+func (o *Options) from(base Options) {
+	o.Host = environments.GetString("DATABASE_HOST")
+	o.Port = environments.GetInt("DATABASE_PORT")
 	o.Host, o.Port = splitHostPort(o.Host, o.Port)
-	o.Database = dbEnv("NAME", base.Database)
-	o.Username = dbEnv("USERNAME", base.Username)
-	o.Password = dbEnv("PASSWORD", base.Password)
-
-	o.PoolMinSize = dbInt("POOL_MIN_SIZE", base.PoolMinSize)
-	o.PoolMaxSize = dbInt("POOL_MAX_SIZE", base.PoolMaxSize)
-
-	o.CommandTimeout = time.Duration(dbInt("COMMAND_TIMEOUT_SECONDS", int(base.CommandTimeout/time.Second))) * time.Second
-	o.ConnectionTimeout = time.Duration(dbInt("CONNECTION_TIMEOUT_SECONDS", int(base.ConnectionTimeout/time.Second))) * time.Second
-
-	o.RetryEnabled = dbBool("RETRY_ENABLED", base.RetryEnabled)
-	o.RetryMaxCount = dbInt("RETRY_MAX_COUNT", base.RetryMaxCount)
-	o.RetryBaseDelay = time.Duration(dbInt("RETRY_BASE_DELAY_MS", int(base.RetryBaseDelay/time.Millisecond))) * time.Millisecond
-
-	o.SlowQuery = time.Duration(dbInt("SLOW_QUERY_MS", int(base.SlowQuery/time.Millisecond))) * time.Millisecond
+	o.Database = environments.GetString("DATABASE_NAME")
+	o.Username = environments.GetString("DATABASE_USERNAME")
+	o.Password = environments.GetString("DATABASE_PASSWORD")
+	o.PoolMinSize = environments.GetInt("DATABASE_POOL_MIN_SIZE", strconv.Itoa(base.PoolMinSize))
+	o.PoolMaxSize = environments.GetInt("DATABASE_POOL_MAX_SIZE", strconv.Itoa(base.PoolMaxSize))
+	o.CommandTimeout = environments.GetDuration("DATABASE_COMMAND_TIMEOUT", base.CommandTimeout.String())
+	o.ConnectionTimeout = environments.GetDuration("DATABASE_CONNECTION_TIMEOUT", base.ConnectionTimeout.String())
+	o.RetryEnabled = environments.GetBool("DATABASE_RETRY_ENABLED", strconv.FormatBool(base.RetryEnabled))
+	o.RetryMaxCount = environments.GetInt("DATABASE_RETRY_MAX_COUNT", strconv.Itoa(base.RetryMaxCount))
+	o.RetryBaseDelay = environments.GetDuration("DATABASE_RETRY_BASE_DELAY", base.RetryBaseDelay.String())
+	o.SlowQuery = environments.GetDuration("DATABASE_SLOW_QUERY", base.SlowQuery.String())
 }
 
 // splitHostPort accepts both the legacy pair of variables
@@ -135,39 +127,19 @@ func splitHostPort(host string, port int) (string, int) {
 	return parsedHost, parsedPortNumber
 }
 
-// dbEnv reads a DATABASE_<name> env var, defaulting to def.
-func dbEnv(name, def string) string {
-	return environments.Get(envPrefix+name, def)
-}
-
-// dbInt reads an int DATABASE_<name> env var.
-func dbInt(name string, def int) int {
-	return environments.GetInt(envPrefix+name, strconv.Itoa(def))
-}
-
-// dbBool reads a bool DATABASE_<name> env var.
-func dbBool(name string, def bool) bool {
-	return environments.GetBool(envPrefix+name, strconv.FormatBool(def))
-}
-
 // loadEnvFiles loads .env files through hellnet-lib-environments (an explicit
 // file pointed by DATABASE_ENV_FILE, the shared ENV_FILE, or
 // the conventional ./.env) so callers only need OpenFromEnv/LoadFromEnv. The
 // error is ignored on purpose: a missing env file is not fatal (explicit
-// Options or already-set environment variables still work). This mirrors the
-// other Hellnet libs.
-func loadEnvFiles() {
-	_ = environments.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
-}
 
 // LoadFromEnv loads DATABASE_* environment variables (plus a .env file
-// via loadEnvFiles) into Options, starting from DefaultOptions as the fallback
+// via loadEnvFiles) into Options, starting from Default as the fallback
 // for any unset value. It is fully self-contained: the caller does not need to
 // load env files beforehand.
 func LoadFromEnv() Options {
-	loadEnvFiles()
-	o := DefaultOptions()
-	o.fromEnv(DefaultOptions())
+	environments.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+	o := Default()
+	o.from(Default())
 	return o
 }
 
@@ -272,11 +244,11 @@ func (db *DB) withSpan(operation string, fn func() error) error {
 	return db.conn.withSpan(operation, fn)
 }
 
-// withDefaults fills zero-valued fields of opts with DefaultOptions so a caller
+// withDefaults fills zero-valued fields of opts with Default so a caller
 // may pass a partial Options (e.g. the documented explicit-options example)
 // without hitting validation or ending up with zero-duration timeouts.
 func withDefaults(o Options) Options {
-	d := DefaultOptions()
+	d := Default()
 	if o.Host == "" {
 		o.Host = d.Host
 	}
@@ -342,6 +314,8 @@ func defaultRetryEnabled(o *Options, d Options) {
 // explicitly via NewWithOptions; the context is captured once at construction
 // and propagated internally.
 func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
+	_ = environments.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+
 	o := Options{}
 	if len(opts) > 0 {
 		o = opts[0]
@@ -452,7 +426,7 @@ func (db *DB) Options() Options {
 // tableOf derives the table name from T, matching the .NET typeof(T).Name
 // convention used by PostgresRepository<T> and ByIdSpecification.
 func tableOf[T any]() string {
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

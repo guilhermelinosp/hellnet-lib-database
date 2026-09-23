@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-func TestDefaultOptions(t *testing.T) {
-	o := DefaultOptions()
+func TestDefault(t *testing.T) {
+	o := Default()
 
-	if o.Host != "localhost" {
-		t.Errorf("Host = %q, want localhost", o.Host)
+	if o.Host != "" {
+		t.Errorf("Host = %q, want empty required value", o.Host)
 	}
-	if o.Port != 5432 {
-		t.Errorf("Port = %d, want 5432", o.Port)
+	if o.Port != 0 {
+		t.Errorf("Port = %d, want zero required value", o.Port)
 	}
 	if o.PoolMinSize != 10 || o.PoolMaxSize != 100 {
 		t.Errorf("pool sizes = %d/%d, want 10/100", o.PoolMinSize, o.PoolMaxSize)
@@ -40,8 +40,8 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("DATABASE_PASSWORD", "secret")
 	t.Setenv("DATABASE_POOL_MAX_SIZE", "42")
 	t.Setenv("DATABASE_RETRY_ENABLED", "false")
-	t.Setenv("DATABASE_RETRY_BASE_DELAY_MS", "250")
-	t.Setenv("DATABASE_COMMAND_TIMEOUT_SECONDS", "7")
+	t.Setenv("DATABASE_RETRY_BASE_DELAY", "250ms")
+	t.Setenv("DATABASE_COMMAND_TIMEOUT", "7s")
 
 	o := LoadFromEnv()
 
@@ -68,19 +68,26 @@ func TestLoadFromEnv(t *testing.T) {
 func TestLoadFromEnvAcceptsHostWithPort(t *testing.T) {
 	t.Setenv("DATABASE_HOST", "postgres.hellnet.com.br:5432")
 	t.Setenv("DATABASE_PORT", "6543")
+	t.Setenv("DATABASE_NAME", "orders")
+	t.Setenv("DATABASE_USERNAME", "app")
+	t.Setenv("DATABASE_PASSWORD", "secret")
 
 	o := LoadFromEnv()
 
 	if o.Host != "postgres.hellnet.com.br" || o.Port != 5432 {
 		t.Errorf("endpoint = %s:%d, want postgres.hellnet.com.br:5432", o.Host, o.Port)
 	}
-	if got := o.dsn(); got != "postgres://postgres.hellnet.com.br:5432/" {
-		t.Errorf("dsn = %q, want postgres://postgres.hellnet.com.br:5432/", got)
+	if got := o.dsn(); got != "postgres://app:secret@postgres.hellnet.com.br:5432/orders" {
+		t.Errorf("dsn = %q, want configured database DSN", got)
 	}
 }
 
 func TestLoadFromEnvAcceptsBracketedIPv6WithPort(t *testing.T) {
 	t.Setenv("DATABASE_HOST", "[::1]:5432")
+	t.Setenv("DATABASE_PORT", "5432")
+	t.Setenv("DATABASE_NAME", "orders")
+	t.Setenv("DATABASE_USERNAME", "app")
+	t.Setenv("DATABASE_PASSWORD", "secret")
 
 	o := LoadFromEnv()
 
@@ -94,7 +101,7 @@ func TestLoadFromEnvAcceptsBracketedIPv6WithPort(t *testing.T) {
 // having to call any external DotEnv loader. Mirrors the other Hellnet libs.
 func TestLoadFromEnvLoadsDotEnv(t *testing.T) {
 	f := t.TempDir() + "/db.env"
-	if err := os.WriteFile(f, []byte("DATABASE_NAME=fromdotenv\n"), 0o600); err != nil {
+	if err := os.WriteFile(f, []byte("DATABASE_HOST=localhost\nDATABASE_PORT=5432\nDATABASE_NAME=fromdotenv\nDATABASE_USERNAME=app\nDATABASE_PASSWORD=secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DATABASE_ENV_FILE", f)
@@ -104,10 +111,6 @@ func TestLoadFromEnvLoadsDotEnv(t *testing.T) {
 	o := LoadFromEnv()
 	if o.Database != "fromdotenv" {
 		t.Errorf("LoadFromEnv did not load .env: Database=%q, want fromdotenv", o.Database)
-	}
-	// Default fallback still applies for vars not present in the file.
-	if o.Host != "localhost" {
-		t.Errorf("default Host not applied: %q, want localhost", o.Host)
 	}
 }
 

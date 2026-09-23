@@ -292,12 +292,12 @@ fmt.Println(page.HasNextPage())
 | `DATABASE_PASSWORD` | ✅ | — | Senha |
 | `DATABASE_POOL_MIN_SIZE` | ❌ | `10` | Pool mínimo |
 | `DATABASE_POOL_MAX_SIZE` | ❌ | `100` | Pool máximo |
-| `DATABASE_COMMAND_TIMEOUT_SECONDS` | ❌ | `30` | Timeout por comando |
-| `DATABASE_CONNECTION_TIMEOUT_SECONDS` | ❌ | `15` | Timeout de conexão |
+| `DATABASE_COMMAND_TIMEOUT` | ❌ | `30s` | Timeout por comando |
+| `DATABASE_CONNECTION_TIMEOUT` | ❌ | `15s` | Timeout de conexão |
 | `DATABASE_RETRY_ENABLED` | ❌ | `true` | Habilitar retry |
 | `DATABASE_RETRY_MAX_COUNT` | ❌ | `3` | Máximo de retry attempts |
-| `DATABASE_RETRY_BASE_DELAY_MS` | ❌ | `100` | Delay base do backoff |
-| `DATABASE_SLOW_QUERY_MS` | ❌ | `500` | Limiar de log de query lenta |
+| `DATABASE_RETRY_BASE_DELAY` | ❌ | `100ms` | Delay base do backoff |
+| `DATABASE_SLOW_QUERY` | ❌ | `500ms` | Limiar de log de query lenta |
 
 ---
 
@@ -355,7 +355,7 @@ hellnet-lib-database/database
 
 ## Observabilidade
 
-Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx e delegue health checks ao [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry). Queries acima do limiar `SLOW_QUERY_MS` geram log estruturado via `log/slog`.
+Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx e delegue health checks ao [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry). Queries acima do limiar `SLOW_QUERY` geram log estruturado via `log/slog`.
 
 ---
 
