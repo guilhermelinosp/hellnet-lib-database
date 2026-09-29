@@ -18,24 +18,30 @@ package database
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
+	"net"
 	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/guilhermelinosp/hellnet-lib-database/internal/env"
+
 	"time"
 
-	"github.com/guilhermelinosp/hellnet-lib-environments/environments"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// envPrefix is the prefix of every HELLNET_DATABASE_* variable.
-const envPrefix = "HELLNET_DATABASE_"
+// envPrefix is the prefix of every database configuration variable.
+const envPrefix = "DATABASE_"
 
 // Options configures the database connection. All fields are populated from
-// environment variables (HELLNET_DATABASE_*) via LoadFromEnv, or set
+// environment variables (DATABASE_*) via LoadFromEnv, or set
 // explicitly.
 type Options struct {
 	// ── Connection ──────────────────────────────────────────────
@@ -70,14 +76,9 @@ type Options struct {
 	HideQueryArgs bool
 }
 
-// DefaultOptions returns the default configuration.
-func DefaultOptions() Options {
+// Default returns the default configuration.
+func Default() Options {
 	return Options{
-		Host:              "localhost",
-		Port:              5432,
-		Database:          "",
-		Username:          "",
-		Password:          "",
 		PoolMinSize:       10,
 		PoolMaxSize:       100,
 		CommandTimeout:    30 * time.Second,
@@ -89,52 +90,57 @@ func DefaultOptions() Options {
 	}
 }
 
-// fromEnv overlays HELLNET_DATABASE_* environment variables (falling back to
-// the shared HELLNET_* prefix, mirroring the other Hellnet libs) on top of the
+// fromEnv overlays DATABASE_* environment variables on top of the
 // provided base Options. It mirrors the env-first convention used across the
 // other Hellnet libs (hellnet-lib-kafka, hellnet-lib-cache, hellnet-lib-telemetry).
-func (o *Options) fromEnv(base Options) {
-	o.Host = environments.Get("HELLNET_DATABASE_HOST", base.Host)
-	o.Port = environments.GetInt("HELLNET_DATABASE_PORT", strconv.Itoa(base.Port))
-	o.Database = environments.Get("HELLNET_DATABASE_NAME", base.Database)
-	o.Username = environments.Get("HELLNET_DATABASE_USERNAME", base.Username)
-	o.Password = environments.Get("HELLNET_DATABASE_PASSWORD", base.Password)
-
-	o.PoolMinSize = environments.GetInt("HELLNET_DATABASE_POOL_MIN_SIZE", strconv.Itoa(base.PoolMinSize))
-	o.PoolMaxSize = environments.GetInt("HELLNET_DATABASE_POOL_MAX_SIZE", strconv.Itoa(base.PoolMaxSize))
-
-	o.CommandTimeout = time.Duration(
-		environments.GetInt("HELLNET_DATABASE_COMMAND_TIMEOUT_SECONDS", strconv.Itoa(int(base.CommandTimeout/time.Second)))) * time.Second
-	o.ConnectionTimeout = time.Duration(
-		environments.GetInt("HELLNET_DATABASE_CONNECTION_TIMEOUT_SECONDS", strconv.Itoa(int(base.ConnectionTimeout/time.Second)))) * time.Second
-
-	o.RetryEnabled = environments.GetBool("HELLNET_DATABASE_RETRY_ENABLED", strconv.FormatBool(base.RetryEnabled))
-	o.RetryMaxCount = environments.GetInt("HELLNET_DATABASE_RETRY_MAX_COUNT", strconv.Itoa(base.RetryMaxCount))
-	o.RetryBaseDelay = time.Duration(
-		environments.GetInt("HELLNET_DATABASE_RETRY_BASE_DELAY_MS", strconv.Itoa(int(base.RetryBaseDelay/time.Millisecond)))) * time.Millisecond
-
-	o.SlowQuery = time.Duration(
-		environments.GetInt("HELLNET_DATABASE_SLOW_QUERY_MS", strconv.Itoa(int(base.SlowQuery/time.Millisecond)))) * time.Millisecond
+func (o *Options) from(base Options) {
+	o.Host = env.String("DATABASE_HOST", "")
+	o.Port = env.Int("DATABASE_PORT", 0)
+	o.Host, o.Port = splitHostPort(o.Host, o.Port)
+	o.Database = env.String("DATABASE_NAME", "")
+	o.Username = env.String("DATABASE_USERNAME", "")
+	o.Password = env.String("DATABASE_PASSWORD", "")
+	o.PoolMinSize = env.Int("DATABASE_POOL_MIN_SIZE", base.PoolMinSize)
+	o.PoolMaxSize = env.Int("DATABASE_POOL_MAX_SIZE", base.PoolMaxSize)
+	o.CommandTimeout = env.Duration("DATABASE_COMMAND_TIMEOUT", base.CommandTimeout)
+	o.ConnectionTimeout = env.Duration("DATABASE_CONNECTION_TIMEOUT", base.ConnectionTimeout)
+	o.RetryEnabled = env.Bool("DATABASE_RETRY_ENABLED", base.RetryEnabled)
+	o.RetryMaxCount = env.Int("DATABASE_RETRY_MAX_COUNT", base.RetryMaxCount)
+	o.RetryBaseDelay = env.Duration("DATABASE_RETRY_BASE_DELAY", base.RetryBaseDelay)
+	o.SlowQuery = env.Duration("DATABASE_SLOW_QUERY", base.SlowQuery)
 }
 
-// loadEnvFiles loads .env files through hellnet-lib-environments using the
-// shared convention of the other Hellnet libs: the conventional ./.env (and
-// its parent-directory candidates) when in a dev environment. The error is
-// ignored on purpose: a missing env file is not fatal (explicit Options or
-// already-set environment variables still work). This mirrors the other
-// Hellnet libs.
-func loadEnvFiles() {
-	_ = environments.LoadDotEnv()
+// splitHostPort accepts both the legacy pair of variables
+// (DATABASE_HOST=postgres, DATABASE_PORT=5432) and an endpoint
+// in DATABASE_HOST (postgres:5432). An embedded port takes precedence
+// over DATABASE_PORT. IPv6 endpoints must use the standard bracketed
+// form, for example [::1]:5432.
+func splitHostPort(host string, port int) (string, int) {
+	host = strings.TrimSpace(host)
+	parsedHost, parsedPort, err := net.SplitHostPort(host)
+	if err != nil {
+		return host, port
+	}
+	parsedPortNumber, err := strconv.Atoi(parsedPort)
+	if err != nil {
+		return host, port
+	}
+	return parsedHost, parsedPortNumber
 }
 
-// LoadFromEnv loads HELLNET_DATABASE_* environment variables (plus a .env file
-// via loadEnvFiles) into Options, starting from DefaultOptions as the fallback
+// loadEnvFiles loads .env files through godotenv (an explicit
+// file pointed by DATABASE_ENV_FILE, the shared ENV_FILE, or
+// the conventional ./.env) so callers only need OpenFromEnv/LoadFromEnv. The
+// error is ignored on purpose: a missing env file is not fatal (explicit
+
+// LoadFromEnv loads DATABASE_* environment variables (plus a .env file
+// via loadEnvFiles) into Options, starting from Default as the fallback
 // for any unset value. It is fully self-contained: the caller does not need to
 // load env files beforehand.
 func LoadFromEnv() Options {
-	loadEnvFiles()
-	o := DefaultOptions()
-	o.fromEnv(DefaultOptions())
+	_ = env.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+	o := Default()
+	o.from(o)
 	return o
 }
 
@@ -167,7 +173,7 @@ func Validate(o Options) error {
 func (o Options) dsn() string {
 	u := url.URL{
 		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", o.Host, o.Port),
+		Host:   net.JoinHostPort(o.Host, strconv.Itoa(o.Port)),
 		Path:   "/" + o.Database,
 	}
 	if o.Username != "" || o.Password != "" {
@@ -217,9 +223,6 @@ func (a poolStatsAdapter) Stat() PoolStats {
 	}
 }
 
-// Ensure poolStatsAdapter implements Pool at compile time.
-var _ Pool = (*poolStatsAdapter)(nil)
-
 // DB is the entry point of the library: a pooled PostgreSQL connection with
 // executor methods, transactional support and retry semantics. Create it with
 // New, MustNew or OpenFromEnv; it is safe for concurrent use.
@@ -233,11 +236,20 @@ type DB struct {
 	retry RetryPolicy
 }
 
-// withDefaults fills zero-valued fields of opts with DefaultOptions so a caller
+// withSpan runs fn inside an OTel span named after the operation when a
+// telemetry client is attached; otherwise it runs fn directly.
+func (db *DB) withSpan(operation string, fn func() error) error {
+	if db == nil {
+		return fn()
+	}
+	return db.conn.withSpan(operation, fn)
+}
+
+// withDefaults fills zero-valued fields of opts with Default so a caller
 // may pass a partial Options (e.g. the documented explicit-options example)
 // without hitting validation or ending up with zero-duration timeouts.
 func withDefaults(o Options) Options {
-	d := DefaultOptions()
+	d := Default()
 	if o.Host == "" {
 		o.Host = d.Host
 	}
@@ -287,18 +299,61 @@ func defaultRetryEnabled(o *Options, d Options) {
 }
 
 // New creates a DB from explicit options, or from the environment when called
-// with no options (env-first, mirroring hellnet-lib-cache's New). In the
-// no-options form it loads HELLNET_DATABASE_* (and a .env file) via
-// LoadFromEnv. Internal operations derive their per-statement timeouts from a
-// Background context captured once here — public methods do not take a
-// context.Context. No connection is established yet; call Ping to verify.
-func New(opts ...Options) (*DB, error) {
+// with a single ctx plus no options (env-first, mirroring hellnet-lib-cache's
+// New). In the no-options form it loads DATABASE_* (and a .env file)
+// via LoadFromEnv. The context is captured ONCE here and propagated internally
+// to every later operation (per-statement timeouts derive from it) — public
+// methods do not take a context.Context. No connection is established yet;
+// call Ping to verify.
+// New follows the zero-config constructor pattern shared by the Hellnet libs:
+// it loads .env and resolves every option from DATABASE_*.
+// HELLNET_* fallback) internally, so callers just write:
+//
+//	db, err := database.New()
+//
+// A nil context degrades to Background (never panics). Options can be supplied
+// explicitly via NewWithOptions; the context is captured once at construction
+// and propagated internally.
+func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
+	_ = env.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]
 	} else {
 		o = LoadFromEnv()
 	}
+	db, err := newDB(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	db.ops = ops
+	return db, nil
+}
+
+// NewWithOptions builds a DB from explicit Options plus a construction
+// context. Use when the caller wants programmatic options (tests, CLI tools)
+// instead of environment-first resolution.
+func NewWithOptions(ctx context.Context, opts ...Options) (*DB, error) {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	} else {
+		o = LoadFromEnv()
+	}
+	return newDB(ctx, o)
+}
+
+// newDB is the shared construction seam behind New/NewWithOptions.
+func newDB(ctx context.Context, o Options) (*DB, error) {
+	// Defensive: documented as required, but degrade instead of panicking on a
+	// programming slip during startup. Warned ONCE here at construction —
+	// never per operation (same approach as hellnet-lib-cache).
+	if ctx == nil {
+		slog.Warn("database: nil context supplied; using Background")
+		ctx = context.Background()
+	}
+
 	o = withDefaults(o)
 	if err := Validate(o); err != nil {
 		return nil, err
@@ -315,9 +370,8 @@ func New(opts ...Options) (*DB, error) {
 	cfg.MaxConns = int32(min(maxSize, math.MaxInt32))
 	cfg.ConnConfig.ConnectTimeout = o.ConnectionTimeout
 
-	// Pool creation stays bound to Background: the pool outlives any
-	// construction-time context. O adaptador projeta Stat() nativo para
-	// PoolStats sem quebrar runner.
+	// Pool creation stays bound to Background: the pool outlives the
+	// construction-time context, whose lifetime only bounds New itself.
 	rawPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("database: create pool: %w", err)
@@ -325,7 +379,7 @@ func New(opts ...Options) (*DB, error) {
 	pool := poolStatsAdapter{Pool: rawPool}
 
 	return &DB{
-		conn:  newConn(pool, o, context.Background()),
+		conn:  newConn(pool, o, ctx),
 		pool:  pool,
 		retry: NewRetryPolicy(o.RetryEnabled, o.RetryMaxCount, o.RetryBaseDelay),
 	}, nil
@@ -333,8 +387,8 @@ func New(opts ...Options) (*DB, error) {
 
 // MustNew is like New but panics on failure. Useful at service startup where a
 // misconfiguration should fail fast.
-func MustNew(opts ...Options) *DB {
-	db, err := New(opts...)
+func MustNew(ctx context.Context, ops telemetry.Client, opts ...Options) *DB {
+	db, err := New(ctx, ops, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -345,8 +399,8 @@ func MustNew(opts ...Options) *DB {
 // the DB. It is the equivalent of the .NET AddHellnetDatabase() env-first
 // overload and is a thin wrapper over New. The env loading is fully contained
 // in the library — no external DotEnv call is required by the caller.
-func OpenFromEnv() (*DB, error) {
-	return New()
+func OpenFromEnv(ctx context.Context, ops telemetry.Client) (*DB, error) {
+	return New(ctx, ops)
 }
 
 // Close releases the underlying pool.
@@ -373,7 +427,7 @@ func (db *DB) Options() Options {
 // tableOf derives the table name from T, matching the .NET typeof(T).Name
 // convention used by PostgresRepository<T> and ByIdSpecification.
 func tableOf[T any]() string {
-	t := reflect.TypeOf((*T)(nil)).Elem()
+	t := reflect.TypeFor[T]()
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

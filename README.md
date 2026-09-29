@@ -34,12 +34,14 @@ Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde
 ### Primeiras linhas
 
 ```go
-db, err := database.New() // contrata o estagiário: lê as env vars e abre o caminho até o caderno
+ctx := context.Background()  // cria o crachá do estagiário: de quem é o pedido e até quando vale
+db, err := database.New(ctx, ops) // lê as env vars e propaga telemetry com o contexto da aplicação
 ```
 
 Linha por linha:
 
-- `database.New()` — contrata o **estagiário**: ele lê as configurações (variáveis de ambiente), abre o caminho até o caderno e devolve um `db` pronto para usar; o `err` avisa se algo deu errado na contratação. O contexto de runtime é capturado internamente (`context.Background()`), como nas outras libs Hellnet.
+- `ctx := context.Background()` — cria um **contexto**: pense nele como o crachá do estagiário, que diz de quem é o pedido e até quando ele vale (prazos e cancelamentos). Você cria UMA vez, no início da aplicação;
+- `db, err := database.New(ctx, ops)` — lê as configurações, abre o pool e propaga telemetry; o `err` avisa se algo deu errado na contratação.
 
 ---
 
@@ -56,47 +58,49 @@ go get github.com/guilhermelinosp/hellnet-lib-database/database
 ### Via environment variables (recomendado)
 
 ```bash
-export HELLNET_DATABASE_HOST=localhost
-export HELLNET_DATABASE_PORT=5432
-export HELLNET_DATABASE_NAME=mydb
-export HELLNET_DATABASE_USERNAME=postgres
-export HELLNET_DATABASE_PASSWORD=password
+export DATABASE_HOST=localhost
+export DATABASE_PORT=5432
+export DATABASE_NAME=mydb
+export DATABASE_USERNAME=postgres
+export DATABASE_PASSWORD=password
 ```
 
 ```go
-// Sem ctx no construtor: o contexto de runtime é capturado internamente.
-db, err := database.OpenFromEnv()
+// O contexto da aplicação é passado UMA VEZ, na construção:
+ctx := context.Background() // ou um ctx app-scoped/long-lived
+
+db, err := database.OpenFromEnv(ctx)
 ```
 
 > **Env-first é self-contained.** `OpenFromEnv`/`LoadFromEnv` carregam o `.env`
-> automaticamente (o convencional `.env`/`./.env` em dev) usando
-> `hellnet-lib-environments`, com fallback do prefixo compartilhado `HELLNET_`
-> (ex.: `HELLNET_DATABASE_HOST` **ou** `HELLNET_HOST`). O chamador
+> automaticamente (via `DATABASE_ENV_FILE`, `ENV_FILE` ou o
+> convencional `.env`/`./.env`) usando carregamento local. O chamador
 > **não** precisa chamar nenhum loader de `.env` — basta definir as variáveis
 > (ou o arquivo) e abrir. Isso espelha o padrão das demais libs Hellnet
 > (`hellnet-lib-kafka`, `hellnet-lib-cache`, `hellnet-lib-telemetry`).
 
-### Contexto: capturado no runtime
+### Contexto: uma vez no construtor
 
-O `context.Context` é capturado internamente no `New`/`Connect`
-(`context.Background()`) e **propagado internamente** pela lib com os timeouts
-de cada operação (`CommandTimeout`, `ConnectionTimeout`). Nenhum construtor nem
-método operacional recebe ctx:
+O `context.Context` é capturado no `New`/`Connect` e **propagado internamente**
+pela lib com os timeouts de cada operação (`CommandTimeout`,
+`ConnectionTimeout`). Nenhum método operacional recebe ctx:
 
 ```go
-db, err := database.New() // env-first; database.New(opts...) p/ explícito
+ctx := context.Background()
+db, err := database.New(ctx) // env-first; database.New(ctx, opts...) p/ explícito
 
 n, err := db.Execute("UPDATE orders SET status = $1 WHERE id = $2", "done", id) // sem ctx
 page, err := repo.Paginate(spec, 1, 20)                                         // sem ctx
 ```
 
-> Os timeouts por-request continuam disponíveis via middleware HTTP (onde a
-> origem é o request), não via parâmetro.
+> Passe um contexto de **vida longa** (app-scoped). O cancelamento cooperativo
+> por-request continua disponível via middleware HTTP (onde a origem é o
+> request), não via parâmetro.
 
 ### Via options explícitas
 
 ```go
-db, err := database.New(database.Options{
+db, err := database.New(ctx, database.Options{
     Host:     "pg.internal",
     Database: "orders",
     Username: "app",
@@ -197,7 +201,7 @@ programas curtos, scripts ou quando se quer exatamente uma conexão com controle
 total de open/close.
 
 ```go
-conn, err := database.Connect(database.Options{
+conn, err := database.Connect(ctx, database.Options{
     Host: "pg.internal", Database: "orders", Username: "app", Password: "secret",
 })
 if err != nil { /* ... */ }
@@ -281,19 +285,19 @@ fmt.Println(page.HasNextPage())
 
 | Variável | Obrigatório | Padrão | Descrição |
 |----------|-------------|--------|-----------|
-| `HELLNET_DATABASE_HOST` | ❌ | `localhost` | Host do PostgreSQL |
-| `HELLNET_DATABASE_PORT` | ❌ | `5432` | Porta |
-| `HELLNET_DATABASE_NAME` | ✅ | — | Nome do banco |
-| `HELLNET_DATABASE_USERNAME` | ✅ | — | Usuário |
-| `HELLNET_DATABASE_PASSWORD` | ✅ | — | Senha |
-| `HELLNET_DATABASE_POOL_MIN_SIZE` | ❌ | `10` | Pool mínimo |
-| `HELLNET_DATABASE_POOL_MAX_SIZE` | ❌ | `100` | Pool máximo |
-| `HELLNET_DATABASE_COMMAND_TIMEOUT_SECONDS` | ❌ | `30` | Timeout por comando |
-| `HELLNET_DATABASE_CONNECTION_TIMEOUT_SECONDS` | ❌ | `15` | Timeout de conexão |
-| `HELLNET_DATABASE_RETRY_ENABLED` | ❌ | `true` | Habilitar retry |
-| `HELLNET_DATABASE_RETRY_MAX_COUNT` | ❌ | `3` | Máximo de retry attempts |
-| `HELLNET_DATABASE_RETRY_BASE_DELAY_MS` | ❌ | `100` | Delay base do backoff |
-| `HELLNET_DATABASE_SLOW_QUERY_MS` | ❌ | `500` | Limiar de log de query lenta |
+| `DATABASE_HOST` | ❌ | `localhost` | Host ou endpoint `host:porta` do PostgreSQL |
+| `DATABASE_PORT` | ❌ | `5432` | Porta |
+| `DATABASE_NAME` | ✅ | — | Nome do banco |
+| `DATABASE_USERNAME` | ✅ | — | Usuário |
+| `DATABASE_PASSWORD` | ✅ | — | Senha |
+| `DATABASE_POOL_MIN_SIZE` | ❌ | `10` | Pool mínimo |
+| `DATABASE_POOL_MAX_SIZE` | ❌ | `100` | Pool máximo |
+| `DATABASE_COMMAND_TIMEOUT` | ❌ | `30s` | Timeout por comando |
+| `DATABASE_CONNECTION_TIMEOUT` | ❌ | `15s` | Timeout de conexão |
+| `DATABASE_RETRY_ENABLED` | ❌ | `true` | Habilitar retry |
+| `DATABASE_RETRY_MAX_COUNT` | ❌ | `3` | Máximo de retry attempts |
+| `DATABASE_RETRY_BASE_DELAY` | ❌ | `100ms` | Delay base do backoff |
+| `DATABASE_SLOW_QUERY` | ❌ | `500ms` | Limiar de log de query lenta |
 
 ---
 
@@ -314,7 +318,7 @@ Retry automático com exponential backoff (`baseDelay << tentativa`). Erros perm
 
 Desabilitar por env:
 ```bash
-export HELLNET_DATABASE_RETRY_ENABLED=false
+export DATABASE_RETRY_ENABLED=false
 ```
 
 ---
@@ -351,7 +355,7 @@ hellnet-lib-database/database
 
 ## Observabilidade
 
-Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx e delegue health checks ao [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry). Queries acima do limiar `SLOW_QUERY_MS` geram log estruturado via `log/slog`.
+Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx e delegue health checks ao [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry). Queries acima do limiar `SLOW_QUERY` geram log estruturado via `log/slog`.
 
 ---
 
@@ -361,7 +365,6 @@ Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx
 |------|-----------|
 | [`hellnet-dep-database`](https://github.com/guilhermelinosp/hellnet-dep-database) | Original .NET |
 | [`hellnet-lib-cache`](https://github.com/guilhermelinosp/hellnet-lib-cache) | Multi-layer cache |
-| [`hellnet-lib-environments`](https://github.com/guilhermelinosp/hellnet-lib-environments) | Env vars + .env compartilhado |
 | [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry) | OpenTelemetry + logging |
 
 ---
@@ -373,9 +376,9 @@ make test           # unitários (sem dependências externas)
 make test-race      # unitários com race detector
 
 # Integração contra um PostgreSQL real (build tag `integration`):
-export HELLNET_TEST_PG_HOST=localhost HELLNET_TEST_PG_PORT=5432 \
-       HELLNET_TEST_PG_USER=postgres HELLNET_TEST_PG_NAME=postgres \
-       HELLNET_TEST_PG_PASSWORD=<senha>
+export TEST_PG_HOST=localhost TEST_PG_PORT=5432 \
+       TEST_PG_USER=postgres TEST_PG_NAME=postgres \
+       TEST_PG_PASSWORD=<senha>
 go test -tags integration -race ./database/
 ```
 

@@ -94,7 +94,7 @@ func Connect(opts Options) (*Conn, error) {
 	}, nil
 }
 
-// ConnectFromEnv loads options from HELLNET_DATABASE_* variables (and a .env
+// ConnectFromEnv loads options from DATABASE_* variables (and a .env
 // file via LoadFromEnv) and opens a single standalone connection. The env
 // loading is fully contained in the library.
 func ConnectFromEnv() (*Conn, error) {
@@ -139,20 +139,50 @@ func (c *Conn) Transactional(fn func(tx *Tx) error) error {
 	return runTransactional(c.beginFn, &c.conn, fn)
 }
 
+// Execute runs a command on the dedicated connection and emits db.execute.
+func (c *Conn) Execute(sql string, args ...any) (int64, error) {
+	var n int64
+	err := c.withSpan("execute", func() error {
+		var err error
+		n, err = c.conn.Execute(sql, args...)
+		return err
+	})
+	return n, err
+}
+
 // ConnQuery maps every row into T on the dedicated connection. No retry.
 func ConnQuery[T any](c *Conn, sql string, args ...any) ([]T, error) {
-	return runQuery[T](&c.conn, sql, args...)
+	var out []T
+	err := c.withSpan("query", func() error {
+		var err error
+		out, err = runQuery[T](&c.conn, sql, args...)
+		return err
+	})
+	return out, err
 }
 
 // ConnQueryRow runs a query expected to return at most one row on the dedicated
 // connection. No retry.
 func ConnQueryRow[T any](c *Conn, sql string, args ...any) (T, bool, error) {
-	return runQueryRow[T](&c.conn, sql, args...)
+	var out T
+	var found bool
+	err := c.withSpan("query", func() error {
+		var err error
+		out, found, err = runQueryRow[T](&c.conn, sql, args...)
+		return err
+	})
+	return out, found, err
 }
 
 // ConnScalar scans a single value on the dedicated connection. No retry.
 func ConnScalar[T any](c *Conn, sql string, args ...any) (T, error) {
-	return runScalar[T](&c.conn, sql, args...)
+	var out T
+	err := c.withSpan("query", func() error {
+		var err error
+		out, err = runScalar[T](&c.conn, sql, args...)
+		return err
+	})
+	return out, err
 }
 
 var (
