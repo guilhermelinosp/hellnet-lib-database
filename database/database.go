@@ -4,6 +4,9 @@
 //
 //	env vars → Options → pgxpool.Pool → *DB / Repository[T]
 //
+// For conventional database/sql access, use NewSQLX. The pgx-backed DB stays
+// available for native COPY, batching and LISTEN/NOTIFY operations.
+//
 // The package mirrors the Hellnet .NET library Hellnet.Database:
 //
 //   - Executor-style raw SQL (Execute, Query[T], QueryRow[T], Scalar[T])

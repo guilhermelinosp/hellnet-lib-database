@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	github.com/guilhermelinosp/hellnet-lib-telemetry v1.5.6-0.20260929020514-36525178a181
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
