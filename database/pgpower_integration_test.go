@@ -3,7 +3,6 @@
 package database
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -106,15 +105,14 @@ func uniqueChannel(prefix string) string {
 
 func TestIntegrationListenNotifyTwoConns(t *testing.T) {
 	opts := integrationOptions(t)
-	ctx := context.Background()
 
-	a, err := Connect(ctx, opts) // listener
+	a, err := Connect(opts) // listener
 	if err != nil {
 		t.Fatalf("Connect(A): %v", err)
 	}
 	defer func() { _ = a.Close() }()
 
-	b, err := Connect(ctx, opts) // notifier
+	b, err := Connect(opts) // notifier
 	if err != nil {
 		t.Fatalf("Connect(B): %v", err)
 	}
@@ -187,14 +185,13 @@ drain:
 
 func TestIntegrationListenWithReconnectReceives(t *testing.T) {
 	opts := integrationOptions(t)
-	ctx := context.Background()
 
-	a, err := Connect(ctx, opts)
+	a, err := Connect(opts)
 	if err != nil {
 		t.Fatalf("Connect(A): %v", err)
 	}
 	defer func() { _ = a.Close() }()
-	b, err := Connect(ctx, opts)
+	b, err := Connect(opts)
 	if err != nil {
 		t.Fatalf("Connect(B): %v", err)
 	}

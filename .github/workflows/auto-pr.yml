@@ -8,9 +8,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
   create-pr:
-    uses: guilhermelinosp/templates/.github/workflows/auto-pr.yml@fde7d4a5a2e7aa5dd42e8812df4783daa39b1543 # main
+    uses: guilhermelinosp/templates/.github/workflows/auto-pr.yml@df9f66533749a4a3a4b59c18a828a179800de096
+    with:
+      app-client-id: ${{ vars.HELLNET_ACTIONS_CLIENT_ID }}
+    secrets: inherit
