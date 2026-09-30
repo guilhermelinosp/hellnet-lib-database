@@ -364,8 +364,8 @@ func NewWithOptions(ctx context.Context, opts ...Options) (*DB, error) {
 }
 
 // newDB is the shared construction seam behind New/NewWithOptions.
-func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB, error) { //nolint:contextcheck // TODO(telemetry-fase-D): legacy constructor context.
-	obs := newObservability(inst) //nolint:contextcheck // constructor initializes providers.
+func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB, error) { //nolint:contextcheck // construction context is stored for compatibility with context-less methods.
+	obs := newObservability(inst)
 	// Defensive: documented as required, but degrade instead of panicking on a
 	// programming slip during startup. Warned ONCE here at construction —
 	// never per operation (same approach as hellnet-lib-cache).

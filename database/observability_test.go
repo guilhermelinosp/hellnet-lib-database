@@ -6,6 +6,7 @@ import (
 
 	"github.com/guilhermelinosp/hellnet-lib-database/internal/obstest"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type contextHook struct{ before, after context.Context }
@@ -58,5 +59,35 @@ func TestPGXTracerOmitsArguments(t *testing.T) {
 		if attr.Value.AsString() == "secret" {
 			t.Fatal("query arguments leaked to span")
 		}
+	}
+}
+
+func TestPoolMetricsCallbackIsUnregisteredWithDBLifecycle(t *testing.T) {
+	h := obstest.New(t)
+	cfg, err := pgxpool.ParseConfig("postgres://app:secret@postgres.internal:5432/orders")
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	cfg.MaxConns = 7
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	registration := registerPoolMetrics(newObservability(h), pool)
+	if registration == nil {
+		t.Fatal("registerPoolMetrics() returned nil")
+	}
+	value, ok := h.GaugeValue(context.Background(), "db.client.connection.max")
+	if !ok || value != 7 {
+		t.Fatalf("pool callback max = %v (present=%v), want 7", value, ok)
+	}
+	db := &DB{pool: poolStatsAdapter{Pool: pool}, poolMetrics: registration}
+	if err := db.Close(); err != nil {
+		t.Fatalf("DB.Close: %v", err)
+	}
+	if _, ok := h.GaugeValue(context.Background(), "db.client.connection.max"); ok {
+		t.Fatal("pool metric callback still produced a datapoint after DB.Close")
 	}
 }

@@ -36,7 +36,7 @@ type runner interface {
 type conn struct {
 	r     runner
 	o     Options
-	ctx   context.Context //nolint:containedctx // TODO(telemetry-fase-D): legacy wrapper retains construction context.
+	ctx   context.Context //nolint:containedctx // compatibility: legacy context-less methods derive operation contexts from it.
 	hooks *hookRegistry
 	ops   telemetry.Client
 	obs   observability

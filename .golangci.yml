@@ -70,23 +70,6 @@ linters:
       - "^_examples/"
       - "internal/obstest/"
       - "^example/"
-    rules:
-      # TODO(telemetry-fase-D): remove after context-first DB construction lands.
-      - path: "database/core.go"
-        linters: [containedctx, depguard, forbidigo]
-      - path: "database/database.go"
-        linters: [contextcheck, depguard, forbidigo]
-      - path: "database/sqlx.go"
-        linters: [contextcheck]
-      # TODO(telemetry-fase-E): remove after contract logger replacement.
-      - path: "database/listen.go"
-        linters: [depguard, forbidigo]
-      - path: "database/resilience.go"
-        linters: [depguard, forbidigo]
-      - path: "database/transaction.go"
-        linters: [depguard, forbidigo]
-      - path: "database/view.go"
-        linters: [depguard, forbidigo]
 
 formatters:
   enable:

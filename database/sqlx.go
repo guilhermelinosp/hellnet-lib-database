@@ -27,7 +27,7 @@ type SQLX struct {
 // NewSQLX opens a sqlx-backed PostgreSQL pool from explicit options, or from
 // DATABASE_* when no options are supplied. It verifies connectivity before
 // returning, matching the fail-fast behavior of Connect.
-func NewSQLX(ctx context.Context, opts ...Options) (*SQLX, error) { //nolint:contextcheck // TODO(telemetry-fase-D): legacy constructor context.
+func NewSQLX(ctx context.Context, opts ...Options) (*SQLX, error) { //nolint:contextcheck // constructor uses ctx only to bound the initial Ping.
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -41,18 +41,10 @@ func NewSQLX(ctx context.Context, opts ...Options) (*SQLX, error) { //nolint:con
 		return nil, err
 	}
 
-	cfg, err := pgx.ParseConfig(o.dsn())
+	cfg, err := sqlxPGXConfig(o)
 	if err != nil {
-		return nil, fmt.Errorf("database: parse sqlx config: %w", err)
+		return nil, err
 	}
-	cfg.ConnectTimeout = o.ConnectionTimeout
-	inst := o.instrumentation
-	if inst == nil {
-		inst = instrument.Noop()
-	}
-	// stdlib.OpenDB uses this pgx config for every connection, so SQLX gets the
-	// same driver-level spans and privacy rules as the pgx-native DB surface.
-	cfg.Tracer = &pgxTracer{obs: newObservability(inst), options: o}
 
 	sqlDB := stdlib.OpenDB(*cfg)
 	xdb := sqlx.NewDb(sqlDB, "pgx")
@@ -70,6 +62,23 @@ func NewSQLX(ctx context.Context, opts ...Options) (*SQLX, error) { //nolint:con
 	}
 
 	return &SQLX{DB: xdb, opts: o}, nil
+}
+
+// sqlxPGXConfig builds the pgx configuration consumed by stdlib.OpenDB. Keep
+// tracing here rather than at sqlx call sites so every database/sql statement
+// receives the same driver-level spans and query-privacy rules as DB.
+func sqlxPGXConfig(o Options) (*pgx.ConnConfig, error) {
+	cfg, err := pgx.ParseConfig(o.dsn())
+	if err != nil {
+		return nil, fmt.Errorf("database: parse sqlx config: %w", err)
+	}
+	cfg.ConnectTimeout = o.ConnectionTimeout
+	inst := o.instrumentation
+	if inst == nil {
+		inst = instrument.Noop()
+	}
+	cfg.Tracer = &pgxTracer{obs: newObservability(inst), options: o}
+	return cfg, nil
 }
 
 // OpenSQLXFromEnv opens the sqlx pool using DATABASE_* and .env settings.
@@ -90,7 +99,7 @@ func (db *SQLX) Options() Options {
 // BeginTx starts a sqlx transaction with the caller's context and options.
 // It is declared explicitly to make the sqlx transaction boundary visible
 // beside DB.Transactional, whose callback uses pgx.Tx.
-func (db *SQLX) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) { //nolint:contextcheck // TODO(telemetry-fase-D): legacy context wrapper.
+func (db *SQLX) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) { //nolint:contextcheck // forwards ctx to sqlx's transaction boundary.
 	if ctx == nil {
 		ctx = context.Background()
 	}
