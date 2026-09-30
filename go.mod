@@ -3,7 +3,7 @@ module github.com/guilhermelinosp/hellnet-lib-database
 go 1.27.0
 
 require (
-	github.com/guilhermelinosp/hellnet-lib-telemetry v1.9.1
+	github.com/guilhermelinosp/hellnet-lib-telemetry v1.9.2-0.20260930170343-0844185243ef
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
