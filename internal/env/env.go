@@ -54,10 +54,7 @@ func Bool(key string, fallback bool) bool {
 
 // Duration returns a duration environment value or fallback when unset or invalid.
 func Duration(key string, fallback time.Duration) time.Duration {
-	return parseDuration(String(key, fallback.String()), fallback)
-}
-
-func parseDuration(raw string, fallback time.Duration) time.Duration {
+	raw := String(key, fallback.String())
 	if value, err := time.ParseDuration(raw); err == nil {
 		return value
 	}
