@@ -1,5 +1,8 @@
 ## Unreleased
 
+- `New` resolves its instrumentation with `instrument.Resolve`: a nil value or a nil pointer
+  (for example a nil `*telemetry.Telemetry`) disables telemetry instead of panicking.
+
 - `New` and `MustNew` now take an `instrument.Instrumentation` (for example a
   `*telemetry.Telemetry`, or nil) instead of the legacy `telemetry.Client` and
   are no longer deprecated; `New(ctx, tel)` is env-first. `OpenFromEnv` is
