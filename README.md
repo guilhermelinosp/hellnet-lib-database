@@ -418,10 +418,27 @@ export TEST_PG_HOST=localhost TEST_PG_PORT=5432 \
 go test -tags integration -race ./database/
 ```
 
-No CI, o workflow `integration` sobe um container `postgres:16` e roda esses
-mesmos testes automaticamente a cada PR.
+Esses testes permanecem locais, protegidos por build tag e variáveis de
+ambiente; a biblioteca não cria workflow de integração no CI.
 
 ---
+
+## Observabilidade
+
+Passe `*telemetry.Telemetry` usando a opção aditiva:
+
+```go
+db, err := database.NewWithOptions(ctx, options, database.WithInstrumentation(tel))
+```
+
+As APIs ctx-first emitem `db.execute`, `db.query` e `db.scalar` como spans
+filhos do chamador. Métricas: `db.client.operation.duration` (`s`),
+`db.client.connection.count` (`db.client.connection.state=used|idle`),
+`db.client.connection.max`, `db.client.connection.wait_time` (`s`),
+`hellnet.db.transactions` (`result=commit|rollback|panic`) e
+`hellnet.db.retries`. Hooks que implementam `ContextQueryHook` recebem o
+contexto da requisição. `PingContext(ctx)` deve ser registrado pelo serviço
+em `/ready`.
 
 ## Licença
 

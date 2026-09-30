@@ -40,7 +40,7 @@ func runIter[T any](c *conn, sql string, args []any, fn func(row T) error) error
 	start := time.Now()
 	rows, err := c.r.Query(sctx, sql, args...)
 	if err != nil {
-		track(c.o, start, sql)
+		track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
 		return err
 	}
 	defer rows.Close()

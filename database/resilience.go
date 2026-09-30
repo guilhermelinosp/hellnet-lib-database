@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // nonTransientSQLStates lists PostgreSQL SQLSTATE codes that must NEVER be
@@ -29,6 +30,14 @@ type RetryPolicy struct {
 	enabled   bool
 	maxCount  int
 	baseDelay time.Duration
+	logger    instrument.Logger
+	retries   metric.Int64Counter
+}
+
+func (p RetryPolicy) withObservability(obs observability) RetryPolicy {
+	p.logger = obs.logger
+	p.retries = obs.retries
+	return p
 }
 
 // NewRetryPolicy builds a retry policy. When enabled is false Do executes fn
@@ -133,8 +142,14 @@ func (p RetryPolicy) do(ctx context.Context, fn func() error) error {
 		if !p.shouldRetry(err, attempt) {
 			return err
 		}
-		slog.Warn("database: transient error, retrying",
-			"attempt", attempt+2, "max", p.maxCount+1, "error", err)
+		logger := p.logger
+		if logger == nil {
+			logger = instrument.Noop().Logger(instrumentationScope)
+		}
+		logger.Warn(ctx, "database transient error, retrying", "attempt", attempt+2, "max", p.maxCount+1, "error", err)
+		if p.retries != nil {
+			p.retries.Add(ctx, 1)
+		}
 		if sleepErr := p.sleep(ctx, attempt); sleepErr != nil {
 			return errors.Join(err, fmt.Errorf("database: retry aborted: %w", sleepErr))
 		}

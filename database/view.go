@@ -2,7 +2,6 @@ package database
 
 import (
 	"errors"
-	"log/slog"
 	"time"
 )
 
@@ -50,8 +49,7 @@ type DBView struct {
 // into either instant deadlines or unbounded waits.
 func (db *DB) WithCommandTimeout(d time.Duration) *DBView {
 	if d < minCommandTimeout {
-		slog.Warn("database: clamping command timeout to minimum",
-			"requested", d.String(), "minimum", minCommandTimeout.String())
+		db.conn.logger().Warn(db.base(), "database clamping command timeout to minimum", "requested", d.String(), "minimum", minCommandTimeout.String())
 		d = minCommandTimeout
 	}
 	return &DBView{db: db, cmdTimeout: d}

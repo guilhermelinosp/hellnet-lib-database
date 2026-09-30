@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -14,7 +15,7 @@ import (
 //
 // Contrato:
 //   - Hooks NÃO devem entrar em pânico. A biblioteca recupera o pânico de um
-//     hook individual (slog.Warn) para não quebrar queries nem os demais
+//     hook individual (logger do contrato) para não quebrar queries nem os demais
 //     hooks — defesa em profundidade, não licença.
 //   - BeforeHook roda ANTES do derive do contexto de timeout; AfterHook é
 //     always-called (sucesso, erro de statement, erro de contexto) e chega em
@@ -64,6 +65,14 @@ type QueryHook interface {
 	// Fases são independentes: pânico contido num Before de um hook não
 	// impede os outros hooks nem o After da operação.
 	AfterHook(info QueryInfo)
+}
+
+// ContextQueryHook is an optional extension to QueryHook. Implementations can
+// correlate hook work with the request trace without changing QueryHook's
+// public contract.
+type ContextQueryHook interface {
+	BeforeQueryContext(context.Context, QueryInfo)
+	AfterQueryContext(context.Context, QueryInfo)
 }
 
 // QueryHookFunc adapta funções anônimas ao QueryHook (zero-value friendly:

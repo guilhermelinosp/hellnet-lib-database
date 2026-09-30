@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
 	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // runner is the minimal statement-execution surface shared by connection pools
@@ -34,23 +36,24 @@ type runner interface {
 type conn struct {
 	r     runner
 	o     Options
-	ctx   context.Context
+	ctx   context.Context //nolint:containedctx // TODO(telemetry-fase-D): legacy wrapper retains construction context.
 	hooks *hookRegistry
 	ops   telemetry.Client
+	obs   observability
 }
 
 // newConn monta um conn raiz (New/Connect) com o registro de hooks derivado
 // das Options. Conexões FILHAS (Tx, Conn adquirida) devem usar conn.derive,
 // que compartilha o mesmo registro — inclusive hooks adicionados depois.
 func newConn(r runner, o Options, ctx context.Context) conn {
-	return conn{r: r, o: o, ctx: ctx, hooks: newHookRegistry(o)}
+	return conn{r: r, o: o, ctx: ctx, hooks: newHookRegistry(o), obs: newObservability(nil)} //nolint:contextcheck // constructor initializes providers.
 }
 
 // derive cria um conn filho (Tx de Begin/Transactional, Conn de Acquire)
 // herdando opções/base e COMPARTILHANDO o registry de hooks do pai: métricas
 // habilitadas tardiamente no DB alcançam todas as transações/conexões novas.
 func (c *conn) derive(r runner) conn {
-	return conn{r: r, o: c.o, ctx: c.base(), hooks: c.hooks, ops: c.ops}
+	return conn{r: r, o: c.o, ctx: c.base(), hooks: c.hooks, ops: c.ops, obs: c.obs}
 }
 
 func (c *conn) withSpan(operation string, fn func() error) error {
@@ -73,8 +76,16 @@ func (c *conn) observed() *MetricsCollector {
 // derive do contexto (ordem: pre-hook → timeout wrap → runner). Os hooks só
 // observam; o contrato documentado diz que não devem mutar sql/args.
 func (c *conn) fireBefore(op, sql string, args []any) {
-	c.eachHook(func(h QueryHook) {
-		h.BeforeHook(QueryInfo{Op: op, SQL: sql, Args: visibleArgs(c.o, args)})
+	c.fireBeforeContext(c.base(), op, sql, args)
+}
+
+func (c *conn) fireBeforeContext(ctx context.Context, op, sql string, args []any) {
+	c.eachHook(func(h QueryHook) { //nolint:contextcheck // context is passed to optional ContextQueryHook below.
+		info := QueryInfo{Op: op, SQL: sql, Args: visibleArgs(c.o, args)}
+		h.BeforeHook(info)
+		if contextual, ok := h.(ContextQueryHook); ok {
+			contextual.BeforeQueryContext(ctx, info)
+		}
 	})
 }
 
@@ -83,14 +94,22 @@ func (c *conn) fireBefore(op, sql string, args []any) {
 // always-called: um after para cada before, salvo pânico do próprio hook,
 // que é contido por recover INDIVIDUAL sem afetar os demais.
 func (c *conn) fireAfter(op, sql string, args []any, d time.Duration, err error, rows int64) {
+	c.fireAfterContext(c.base(), op, sql, args, d, err, rows)
+}
+
+func (c *conn) fireAfterContext(ctx context.Context, op, sql string, args []any, d time.Duration, err error, rows int64) {
 	vargs := visibleArgs(c.o, args)
-	c.eachHook(func(h QueryHook) {
-		h.AfterHook(QueryInfo{Op: op, SQL: sql, Args: vargs, Duration: d, Err: err, Rows: rows})
+	c.eachHook(func(h QueryHook) { //nolint:contextcheck // context is passed to optional ContextQueryHook below.
+		info := QueryInfo{Op: op, SQL: sql, Args: vargs, Duration: d, Err: err, Rows: rows}
+		h.AfterHook(info)
+		if contextual, ok := h.(ContextQueryHook); ok {
+			contextual.AfterQueryContext(ctx, info)
+		}
 	})
 }
 
 // eachHook itera sobre os hooks disparando fn sob recover individual: um hook
-// em pânico vira slog.Warn e NUNCA quebra a query nem impede os demais hooks
+// em pânico vira aviso no logger do contrato e NUNCA quebra a query nem impede os demais hooks
 // (nem a fase After da operação). Contrato documentado: hooks NÃO devem entrar
 // em pânico; isto é defesa em profundidade da biblioteca.
 func (c *conn) eachHook(fn func(QueryHook)) {
@@ -101,8 +120,7 @@ func (c *conn) eachHook(fn func(QueryHook)) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Warn("database: query hook panicked (recovered)",
-						"hook", fmt.Sprintf("%T", h), "panic", r)
+					c.obs.logger.Warn(c.base(), "database query hook panicked (recovered)", "hook", fmt.Sprintf("%T", h), "panic", r)
 				}
 			}()
 			fn(h)
@@ -130,18 +148,25 @@ func (c *conn) base() context.Context {
 	return c.ctx
 }
 
+func (c *conn) logger() instrument.Logger {
+	if c != nil && c.obs.logger != nil {
+		return c.obs.logger
+	}
+	return instrument.Noop().Logger(instrumentationScope)
+}
+
 // timeout bounds ctx with the given command timeout.
 func timeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, d)
 }
 
-// freshRollbackCtx derives a context for a COMPENSATING rollback straight from
-// context.Background(), bounded by CommandTimeout. Used where the primary
+// freshRollbackCtx derives a context for a COMPENSATING rollback from the
+// caller lineage without inheriting cancellation, bounded by CommandTimeout. Used where the primary
 // statement just failed — a failed commit very often failed exactly because
 // its context hit the deadline — so reusing that context would make the
 // rollback instantly futile.
-func freshRollbackCtx(o Options) (context.Context, context.CancelFunc) {
-	return timeout(context.Background(), o.CommandTimeout)
+func freshRollbackCtx(parent context.Context, o Options) (context.Context, context.CancelFunc) {
+	return timeout(context.WithoutCancel(contextOrBackground(parent)), o.CommandTimeout)
 }
 
 // rollbackCtx prefers the caller's construction-time context (keeping its
@@ -151,7 +176,7 @@ func freshRollbackCtx(o Options) (context.Context, context.CancelFunc) {
 // a live caller context is still meaningful.
 func rollbackCtx(base context.Context, o Options) (context.Context, context.CancelFunc) {
 	if base.Err() != nil {
-		return freshRollbackCtx(o)
+		return freshRollbackCtx(base, o)
 	}
 	return timeout(base, o.CommandTimeout)
 }
@@ -159,9 +184,9 @@ func rollbackCtx(base context.Context, o Options) (context.Context, context.Canc
 // track reports slow queries against the SlowQuery diagnostic threshold.
 // Mantido para retrocompatibilidade do slog de warning; os hooks recebem TODA
 // operação de qualquer forma (inclusive as lentas).
-func track(o Options, start time.Time, sql string) {
-	if o.SlowQuery > 0 && time.Since(start) > o.SlowQuery {
-		slog.Warn("database: slow query", "duration", time.Since(start), "sql", sql)
+func track(c *conn, start time.Time, sql string) {
+	if c.o.SlowQuery > 0 && time.Since(start) > c.o.SlowQuery {
+		c.obs.logger.Warn(c.base(), "database slow query", "duration", time.Since(start), "sql", sql)
 	}
 }
 
@@ -181,26 +206,30 @@ func track(o Options, start time.Time, sql string) {
 // de sucesso e rowsUnknown caso contrário. Com retry habilitado cada TENTATIVA
 // dispara o par before/after (documentado no contrato de QueryHook).
 func runQuery[T any](c *conn, sql string, args ...any) ([]T, error) {
-	c.fireBefore(OpQuery, sql, args)
+	return runQueryContext[T](c, c.base(), sql, args...)
+}
 
-	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
+func runQueryContext[T any](c *conn, parent context.Context, sql string, args ...any) ([]T, error) {
+	c.fireBeforeContext(parent, OpQuery, sql, args)
+
+	cctx, cancel := timeout(parent, c.o.CommandTimeout)
 	defer cancel()
 
 	start := time.Now()
 	rows, err := c.r.Query(cctx, sql, args...)
 	if err != nil {
-		track(c.o, start, sql)
-		c.fireAfter(OpQuery, sql, args, time.Since(start), err, rowsUnknown)
+		track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
+		c.fireAfterContext(parent, OpQuery, sql, args, time.Since(start), err, rowsUnknown)
 		return nil, err
 	}
 	out, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[T])
-	track(c.o, start, sql)
+	track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
 
 	if err != nil {
-		c.fireAfter(OpQuery, sql, args, time.Since(start), err, rowsUnknown)
+		c.fireAfterContext(parent, OpQuery, sql, args, time.Since(start), err, rowsUnknown)
 		return out, err
 	}
-	c.fireAfter(OpQuery, sql, args, time.Since(start), nil, int64(len(out)))
+	c.fireAfterContext(parent, OpQuery, sql, args, time.Since(start), nil, int64(len(out)))
 	return out, nil
 }
 
@@ -212,33 +241,37 @@ func runQuery[T any](c *conn, sql string, args ...any) ([]T, error) {
 // Hooks: resultado vazio NÃO é erro para os hooks (semântica idêntica à
 // biblioteca): AfterHook chega com Err=nil e Rows=0. Encontrado: Rows=1.
 func runQueryRow[T any](c *conn, sql string, args ...any) (T, bool, error) {
+	return runQueryRowContext[T](c, c.base(), sql, args...)
+}
+
+func runQueryRowContext[T any](c *conn, parent context.Context, sql string, args ...any) (T, bool, error) {
 	var zero T
 
-	c.fireBefore(OpQueryRow, sql, args)
+	c.fireBeforeContext(parent, OpQueryRow, sql, args)
 
-	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
+	cctx, cancel := timeout(parent, c.o.CommandTimeout)
 	defer cancel()
 
 	start := time.Now()
 	rows, err := c.r.Query(cctx, sql, args...)
 	if err != nil {
-		track(c.o, start, sql)
-		c.fireAfter(OpQueryRow, sql, args, time.Since(start), err, rowsUnknown)
+		track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
+		c.fireAfterContext(parent, OpQueryRow, sql, args, time.Since(start), err, rowsUnknown)
 		return zero, false, err
 	}
 	value, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[T])
-	track(c.o, start, sql)
+	track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
 	duration := time.Since(start)
 
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		c.fireAfter(OpQueryRow, sql, args, duration, nil, 0)
+		c.fireAfterContext(parent, OpQueryRow, sql, args, duration, nil, 0)
 		return zero, false, nil
 	case err != nil:
-		c.fireAfter(OpQueryRow, sql, args, duration, err, rowsUnknown)
+		c.fireAfterContext(parent, OpQueryRow, sql, args, duration, err, rowsUnknown)
 		return zero, false, err
 	default:
-		c.fireAfter(OpQueryRow, sql, args, duration, nil, 1)
+		c.fireAfterContext(parent, OpQueryRow, sql, args, duration, nil, 1)
 		return value, true, nil
 	}
 }
@@ -249,17 +282,21 @@ func runQueryRow[T any](c *conn, sql string, args ...any) (T, bool, error) {
 // Hooks: Rows permanece rowsUnknown — a existência/contagem de linhas não é
 // fato observável pelo contrato scalar.
 func runScalar[T any](c *conn, sql string, args ...any) (T, error) {
-	c.fireBefore(OpScalar, sql, args)
+	return runScalarContext[T](c, c.base(), sql, args...)
+}
 
-	cctx, cancel := timeout(c.base(), c.o.CommandTimeout)
+func runScalarContext[T any](c *conn, parent context.Context, sql string, args ...any) (T, error) {
+	c.fireBeforeContext(parent, OpScalar, sql, args)
+
+	cctx, cancel := timeout(parent, c.o.CommandTimeout)
 	defer cancel()
 
 	var value T
 
 	start := time.Now()
 	err := c.r.QueryRow(cctx, sql, args...).Scan(&value)
-	track(c.o, start, sql)
-	c.fireAfter(OpScalar, sql, args, time.Since(start), err, rowsUnknown)
+	track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
+	c.fireAfterContext(parent, OpScalar, sql, args, time.Since(start), err, rowsUnknown)
 
 	return value, err
 }
@@ -278,7 +315,7 @@ func (c *conn) Execute(sql string, args ...any) (int64, error) {
 
 	start := time.Now()
 	tag, err := c.r.Exec(cctx, sql, args...)
-	track(c.o, start, sql)
+	track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
 	if err != nil {
 		c.fireAfter(OpExec, sql, args, time.Since(start), err, rowsUnknown)
 		return 0, err
@@ -320,6 +357,29 @@ func (db *DB) Execute(sql string, args ...any) (int64, error) {
 	return n, err
 }
 
+// ExecuteContext executes a command as a child of ctx.
+func (db *DB) ExecuteContext(ctx context.Context, sql string, args ...any) (n int64, err error) {
+	ctx = contextOrBackground(ctx)
+	ctx, span := db.obs.tracer.Start(ctx, "db.execute", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		db.obs.observeOperation(ctx, "execute", result, started)
+	}()
+	_, err = retried(ctx, db.retry, func() (struct{}, error) {
+		var inner error
+		n, inner = db.conn.ExecuteContext(ctx, sql, args...)
+		return struct{}{}, inner
+	})
+	return n, err
+}
+
 // Query runs a SELECT and maps every row into a T. Transient failures are
 // retried when retry is enabled. Every retry attempt fires QueryHooks again.
 // Emits a db.query OTel span when telemetry is attached.
@@ -333,6 +393,24 @@ func Query[T any](db *DB, sql string, args ...any) ([]T, error) {
 		return err
 	})
 	return out, err
+}
+
+// QueryContext runs a typed query as a child of ctx.
+func QueryContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out []T, err error) {
+	ctx = contextOrBackground(ctx)
+	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		db.obs.observeOperation(ctx, "query", result, started)
+	}()
+	return retried(ctx, db.retry, func() ([]T, error) { return runQueryContext[T](&db.conn, ctx, sql, args...) })
 }
 
 // QueryRow runs a query expected to return at most one row. Transient failures
@@ -353,10 +431,74 @@ func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 	return out, found, err
 }
 
+// QueryRowContext runs a single-row query as a child of ctx.
+func QueryRowContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out T, found bool, err error) {
+	ctx = contextOrBackground(ctx)
+	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		db.obs.observeOperation(ctx, "query", result, started)
+	}()
+	err = db.retry.do(ctx, func() error {
+		var inner error
+		out, found, inner = runQueryRowContext[T](&db.conn, ctx, sql, args...)
+		return inner
+	})
+	return out, found, err
+}
+
 // Scalar runs a single-value query and scans it into T. Transient failures are
 // retried when retry is enabled. Every retry attempt fires QueryHooks again.
 func Scalar[T any](db *DB, sql string, args ...any) (T, error) {
 	return retried(db.base(), db.retry, func() (T, error) {
 		return runScalar[T](&db.conn, sql, args...)
 	})
+}
+
+// ScalarContext runs a scalar query as a child of ctx.
+func ScalarContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out T, err error) {
+	ctx = contextOrBackground(ctx)
+	ctx, span := db.obs.tracer.Start(ctx, "db.scalar", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	started := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		db.obs.observeOperation(ctx, "scalar", result, started)
+	}()
+	return retried(ctx, db.retry, func() (T, error) { return runScalarContext[T](&db.conn, ctx, sql, args...) })
+}
+
+func contextOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func (c *conn) ExecuteContext(ctx context.Context, sql string, args ...any) (int64, error) {
+	c.fireBeforeContext(ctx, OpExec, sql, args)
+	cctx, cancel := timeout(contextOrBackground(ctx), c.o.CommandTimeout)
+	defer cancel()
+	start := time.Now()
+	tag, err := c.r.Exec(cctx, sql, args...)
+	track(c, start, sql) //nolint:contextcheck // legacy helper derives the connection context.
+	if err != nil {
+		c.fireAfterContext(ctx, OpExec, sql, args, time.Since(start), err, rowsUnknown)
+		return 0, err
+	}
+	n := tag.RowsAffected()
+	c.fireAfterContext(ctx, OpExec, sql, args, time.Since(start), nil, n)
+	return n, nil
 }
