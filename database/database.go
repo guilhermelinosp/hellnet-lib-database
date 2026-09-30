@@ -21,7 +21,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"net"
 	"net/url"
@@ -30,6 +29,8 @@ import (
 	"strings"
 
 	"github.com/guilhermelinosp/hellnet-lib-database/internal/env"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/instrument"
+	"go.opentelemetry.io/otel/metric"
 
 	"time"
 
@@ -76,7 +77,8 @@ type Options struct {
 	QueryHooks []QueryHook
 	// HideQueryArgs corta os args antes de qualquer hook/métrica
 	// (PII/segredos não devem vazar para pipelines de observabilidade).
-	HideQueryArgs bool
+	HideQueryArgs   bool
+	instrumentation instrument.Instrumentation
 }
 
 // Default returns the default configuration.
@@ -235,8 +237,9 @@ func (a poolStatsAdapter) Stat() PoolStats {
 // runner surface.
 type DB struct {
 	conn
-	pool  Pool
-	retry RetryPolicy
+	pool        Pool
+	retry       RetryPolicy
+	poolMetrics metric.Registration
 }
 
 // withSpan runs fn inside an OTel span named after the operation when a
@@ -317,6 +320,7 @@ func defaultRetryEnabled(o *Options, d Options) {
 // A nil context degrades to Background (never panics). Options can be supplied
 // explicitly via NewWithOptions; the context is captured once at construction
 // and propagated internally.
+// Deprecated: use NewWithOptions with WithInstrumentation.
 func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
 	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 
@@ -326,7 +330,7 @@ func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error
 	} else {
 		o = LoadFromEnv()
 	}
-	db, err := newDB(ctx, o)
+	db, err := newDB(ctx, o, legacyInstrumentation(ops))
 	if err != nil {
 		return nil, err
 	}
@@ -334,26 +338,39 @@ func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error
 	return db, nil
 }
 
-// NewWithOptions builds a DB from explicit Options plus a construction
-// context. Use when the caller wants programmatic options (tests, CLI tools)
-// instead of environment-first resolution.
+// WithInstrumentation supplies the Hellnet observability contract. It is
+// represented as an Options value to preserve the original variadic API.
+func WithInstrumentation(inst instrument.Instrumentation) Options {
+	return Options{instrumentation: inst}
+}
+
+// NewWithOptions accepts legacy Options values and the additive
+// WithInstrumentation option.
 func NewWithOptions(ctx context.Context, opts ...Options) (*DB, error) {
 	var o Options
+	var inst instrument.Instrumentation
 	if len(opts) > 0 {
 		o = opts[0]
-	} else {
+	}
+	for _, option := range opts {
+		if option.instrumentation != nil {
+			inst = option.instrumentation
+		}
+	}
+	if len(opts) == 0 || (len(opts) == 1 && opts[0].instrumentation != nil) {
 		o = LoadFromEnv()
 	}
-	return newDB(ctx, o)
+	return newDB(ctx, o, inst)
 }
 
 // newDB is the shared construction seam behind New/NewWithOptions.
-func newDB(ctx context.Context, o Options) (*DB, error) {
+func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB, error) { //nolint:contextcheck // construction context is stored for compatibility with context-less methods.
+	obs := newObservability(inst)
 	// Defensive: documented as required, but degrade instead of panicking on a
 	// programming slip during startup. Warned ONCE here at construction —
 	// never per operation (same approach as hellnet-lib-cache).
 	if ctx == nil {
-		slog.Warn("database: nil context supplied; using Background")
+		obs.logger.Warn(context.TODO(), "database nil construction context; using Background")
 		ctx = context.Background()
 	}
 
@@ -372,6 +389,7 @@ func newDB(ctx context.Context, o Options) (*DB, error) {
 	cfg.MinConns = int32(minSize)
 	cfg.MaxConns = int32(min(maxSize, math.MaxInt32))
 	cfg.ConnConfig.ConnectTimeout = o.ConnectionTimeout
+	cfg.ConnConfig.Tracer = &pgxTracer{obs: obs, options: o}
 
 	// Pool creation stays bound to Background: the pool outlives the
 	// construction-time context, whose lifetime only bounds New itself.
@@ -381,15 +399,27 @@ func newDB(ctx context.Context, o Options) (*DB, error) {
 	}
 	pool := poolStatsAdapter{Pool: rawPool}
 
-	return &DB{
-		conn:  newConn(pool, o, ctx),
+	conn := newConn(pool, o, ctx)
+	conn.obs = obs
+	db := &DB{
+		conn:  conn,
 		pool:  pool,
-		retry: NewRetryPolicy(o.RetryEnabled, o.RetryMaxCount, o.RetryBaseDelay),
-	}, nil
+		retry: NewRetryPolicy(o.RetryEnabled, o.RetryMaxCount, o.RetryBaseDelay).withObservability(obs),
+	}
+	db.poolMetrics = registerPoolMetrics(obs, rawPool)
+	return db, nil
+}
+
+func legacyInstrumentation(ops telemetry.Client) instrument.Instrumentation {
+	if inst, ok := any(ops).(instrument.Instrumentation); ok {
+		return inst
+	}
+	return nil
 }
 
 // MustNew is like New but panics on failure. Useful at service startup where a
 // misconfiguration should fail fast.
+// Deprecated: use NewWithOptions with WithInstrumentation.
 func MustNew(ctx context.Context, ops telemetry.Client, opts ...Options) *DB {
 	db, err := New(ctx, ops, opts...)
 	if err != nil {
@@ -402,20 +432,30 @@ func MustNew(ctx context.Context, ops telemetry.Client, opts ...Options) *DB {
 // the DB. It is the equivalent of the .NET AddHellnetDatabase() env-first
 // overload and is a thin wrapper over New. The env loading is fully contained
 // in the library — no external DotEnv call is required by the caller.
+// Deprecated: use NewWithOptions with WithInstrumentation and LoadFromEnv.
 func OpenFromEnv(ctx context.Context, ops telemetry.Client) (*DB, error) {
 	return New(ctx, ops)
 }
 
 // Close releases the underlying pool.
 func (db *DB) Close() error {
+	if db.poolMetrics != nil {
+		_ = db.poolMetrics.Unregister()
+	}
 	db.pool.Close()
 	return nil
 }
 
-// Ping verifies database connectivity. The context captured once at New is
-// used internally, bounded by the configured ConnectionTimeout.
+// Ping verifies database connectivity using the construction context.
+// Deprecated: use PingContext with the caller's context.
 func (db *DB) Ping() error {
-	ctx, cancel := context.WithTimeout(db.base(), db.o.ConnectionTimeout)
+	return db.PingContext(db.base())
+}
+
+// PingContext verifies database connectivity as a child of ctx. Register it
+// in the service's readiness endpoint when database connectivity is required.
+func (db *DB) PingContext(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(contextOrBackground(ctx), db.o.ConnectionTimeout)
 	defer cancel()
 	return db.pool.Ping(ctx)
 }

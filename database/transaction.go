@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -32,6 +31,11 @@ func (tx *Tx) Execute(sql string, args ...any) (int64, error) {
 	return n, err
 }
 
+// ExecuteContext executes a command inside the transaction as a child of ctx.
+func (tx *Tx) ExecuteContext(ctx context.Context, sql string, args ...any) (int64, error) {
+	return tx.conn.ExecuteContext(ctx, sql, args...)
+}
+
 // TxQuery maps every row into T. Rows see the transaction's uncommitted state.
 func TxQuery[T any](tx *Tx, sql string, args ...any) ([]T, error) {
 	var out []T
@@ -41,6 +45,11 @@ func TxQuery[T any](tx *Tx, sql string, args ...any) ([]T, error) {
 		return err
 	})
 	return out, err
+}
+
+// TxQueryContext maps rows inside the transaction using the caller's context.
+func TxQueryContext[T any](ctx context.Context, tx *Tx, sql string, args ...any) ([]T, error) {
+	return runQueryContext[T](contextOrBackground(ctx), &tx.conn, sql, args...)
 }
 
 // TxQueryRow runs a query expected to return at most one row inside the
@@ -56,6 +65,11 @@ func TxQueryRow[T any](tx *Tx, sql string, args ...any) (T, bool, error) {
 	return out, found, err
 }
 
+// TxQueryRowContext maps one row inside the transaction using the caller's context.
+func TxQueryRowContext[T any](ctx context.Context, tx *Tx, sql string, args ...any) (T, bool, error) {
+	return runQueryRowContext[T](contextOrBackground(ctx), &tx.conn, sql, args...)
+}
+
 // TxScalar scans a single-value result inside the transaction.
 func TxScalar[T any](tx *Tx, sql string, args ...any) (T, error) {
 	var out T
@@ -65,6 +79,11 @@ func TxScalar[T any](tx *Tx, sql string, args ...any) (T, error) {
 		return err
 	})
 	return out, err
+}
+
+// TxScalarContext scans one value inside the transaction using the caller's context.
+func TxScalarContext[T any](ctx context.Context, tx *Tx, sql string, args ...any) (T, error) {
+	return runScalarContext[T](contextOrBackground(ctx), &tx.conn, sql, args...)
 }
 
 // Commit commits the transaction. Use it only for transactions started via
@@ -140,11 +159,11 @@ func runTransactional(
 		if !done {
 			met.recordRollbackCompensation()
 			met.recordTx(txResultPanic)
-			rctx, rcancel := freshRollbackCtx(o)
+			src.obs.observeTransaction(src.base(), "panic")
+			rctx, rcancel := freshRollbackCtx(src.base(), o)
 			defer rcancel()
 			if rbErr := pgxTx.Rollback(rctx); rbErr != nil {
-				slog.Warn("database: deferred rollback after panic",
-					"error", errors.Join(fmt.Errorf("database: rollback: %w", rbErr)))
+				src.obs.logger.Warn(rctx, "database deferred rollback after panic", "error", errors.Join(fmt.Errorf("database: rollback: %w", rbErr)))
 			}
 		}
 	}()
@@ -158,6 +177,7 @@ func runTransactional(
 		}
 		done = true
 		met.recordTx(txResultRollback)
+		src.obs.observeTransaction(src.base(), "rollback")
 		return err
 	}
 
@@ -171,18 +191,19 @@ func runTransactional(
 		// a FRESH Background-backed timeout.
 		met.recordRollbackCompensation()
 		met.recordTx(txResultRollback)
-		rctx, rcancel := freshRollbackCtx(o)
+		src.obs.observeTransaction(src.base(), "rollback")
+		rctx, rcancel := freshRollbackCtx(src.base(), o)
 		rbErr := pgxTx.Rollback(rctx)
 		rcancel()
 		if rbErr != nil {
-			slog.Warn("database: post-commit-failure rollback",
-				"error", errors.Join(comErr, fmt.Errorf("database: rollback: %w", rbErr)))
+			src.obs.logger.Warn(rctx, "database post-commit rollback", "error", errors.Join(comErr, fmt.Errorf("database: rollback: %w", rbErr)))
 		}
 		done = true
 		return fmt.Errorf("database: commit: %w", comErr)
 	}
 	done = true
 	met.recordTx(txResultCommit)
+	src.obs.observeTransaction(src.base(), "commit")
 	return nil
 }
 
@@ -196,6 +217,14 @@ func runTransactional(
 func (db *DB) Transactional(fn func(tx *Tx) error) error {
 	return runTransactional(func(c context.Context) (pgx.Tx, error) { return db.pool.Begin(c) },
 		&db.conn, fn)
+}
+
+// TransactionalContext runs an atomic transaction as a child of ctx.
+func (db *DB) TransactionalContext(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) error {
+	scoped := db.conn
+	scoped.ctx = contextOrBackground(ctx)
+	return runTransactional(func(c context.Context) (pgx.Tx, error) { return db.pool.Begin(c) }, &scoped, //nolint:contextcheck // begin receives the scoped caller context.
+		func(tx *Tx) error { return fn(scoped.base(), tx) }) //nolint:contextcheck // callback receives the scoped caller context.
 }
 
 var (

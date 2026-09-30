@@ -3,7 +3,7 @@
 Biblioteca de infraestrutura de banco de dados PostgreSQL-first para Go. Configuração via environment variables, modular, cloud-native. Porta idiomática de [Hellnet.Database](https://github.com/guilhermelinosp/hellnet-dep-database) (.NET).
 
 ```
-Env vars → Options → pgxpool.Pool (*DB) + sqlx.DB (*SQLX)
+Env vars → Options → pgxpool.Pool (*DB) + database/sql via pgx (*SQLX)
 ```
 
 ---
@@ -35,13 +35,13 @@ Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde
 
 ```go
 ctx := context.Background()  // cria o crachá do estagiário: de quem é o pedido e até quando vale
-db, err := database.New(ctx, ops) // lê as env vars e propaga telemetry com o contexto da aplicação
+db, err := database.NewWithOptions(ctx) // lê as env vars; use WithInstrumentation para telemetry
 ```
 
 Linha por linha:
 
 - `ctx := context.Background()` — cria um **contexto**: pense nele como o crachá do estagiário, que diz de quem é o pedido e até quando ele vale (prazos e cancelamentos). Você cria UMA vez, no início da aplicação;
-- `db, err := database.New(ctx, ops)` — lê as configurações, abre o pool e propaga telemetry; o `err` avisa se algo deu errado na contratação.
+- `db, err := database.NewWithOptions(ctx)` — lê as configurações e abre o pool; o `err` avisa se algo deu errado na contratação.
 
 ---
 
@@ -82,7 +82,7 @@ export DATABASE_PASSWORD=password
 // O contexto da aplicação é passado UMA VEZ, na construção:
 ctx := context.Background() // ou um ctx app-scoped/long-lived
 
-db, err := database.OpenFromEnv(ctx)
+db, err := database.NewWithOptions(ctx)
 ```
 
 > **Env-first é self-contained.** `OpenFromEnv`/`LoadFromEnv` carregam o `.env`
@@ -100,7 +100,7 @@ pela lib com os timeouts de cada operação (`CommandTimeout`,
 
 ```go
 ctx := context.Background()
-db, err := database.New(ctx) // env-first; database.New(ctx, opts...) p/ explícito
+db, err := database.NewWithOptions(ctx) // env-first; passe Options para configuração explícita
 
 n, err := db.Execute("UPDATE orders SET status = $1 WHERE id = $2", "done", id) // sem ctx
 page, err := repo.Paginate(spec, 1, 20)                                         // sem ctx
@@ -113,7 +113,7 @@ page, err := repo.Paginate(spec, 1, 20)                                         
 ### Via options explícitas
 
 ```go
-db, err := database.New(ctx, database.Options{
+db, err := database.NewWithOptions(ctx, database.Options{
     Host:     "pg.internal",
     Database: "orders",
     Username: "app",
@@ -389,12 +389,6 @@ hellnet-lib-database/database
 
 ---
 
-## Observabilidade
-
-Sem instrumentação própria. Use OpenTelemetry padrão para `database/sql`/pgx e delegue health checks ao [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry). Queries acima do limiar `SLOW_QUERY` geram log estruturado via `log/slog`.
-
----
-
 ## Repositórios Relacionados
 
 | Repo | Propósito |
@@ -418,10 +412,43 @@ export TEST_PG_HOST=localhost TEST_PG_PORT=5432 \
 go test -tags integration -race ./database/
 ```
 
-No CI, o workflow `integration` sobe um container `postgres:16` e roda esses
-mesmos testes automaticamente a cada PR.
+Esses testes permanecem locais, protegidos por build tag e variáveis de
+ambiente; a biblioteca não cria workflow de integração no CI.
 
 ---
+
+## Observabilidade
+
+Passe uma implementação de `instrument.Instrumentation` — por exemplo, o
+cliente do [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-lib-telemetry)
+— usando a opção aditiva:
+
+```go
+db, err := database.NewWithOptions(ctx, options, database.WithInstrumentation(tel))
+```
+
+As APIs ctx-first emitem `db.execute`, `db.query` e `db.scalar` como spans
+filhos do chamador. O driver pgx também emite `db.query` para cada statement,
+inclusive na superfície `SQLX`; argumentos nunca são registrados e
+`HideQueryArgs` também remove o texto SQL. Métricas OTel: `db.client.operation.duration` (`s`),
+`db.client.connection.count` (`db.client.connection.state=used|idle`),
+`db.client.connection.max`, `db.client.connection.wait_time` (`s`),
+`hellnet.db.transactions` (`result=commit|rollback|panic`) e `hellnet.db.retries`.
+As métricas do pool usam callback OTel e deixam de observar quando `db.Close()`
+é chamado. Hooks que implementam `ContextQueryHook` recebem o contexto da
+requisição. `PingContext(ctx)` deve ser registrado pelo serviço em `/ready`.
+
+Para a exposição Prometheus nativa e opcional, chame `EnableMetrics` uma vez
+por `DB` e feche o handle durante o desligamento. Ela registra as famílias
+`db_queries_total`, `db_query_duration_seconds`, métricas de pool e de
+transação; `MetricsHandle.Close` interrompe o sampler, remove o hook e
+desregistra os collectors.
+
+```go
+handle, err := db.EnableMetrics(prometheus.DefaultRegisterer)
+if err != nil { /* ... */ }
+defer handle.Close()
+```
 
 ## Licença
 

@@ -3,12 +3,12 @@ package database
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/guilhermelinosp/hellnet-lib-database/internal/obstest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -64,25 +64,6 @@ func (f *fakeListenRunner) recordedSQL() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.sqls...)
 }
-
-// warnCapture collects WARN records for reconnect-log assertions.
-// (Distinct name from the integration-tagged capturingHandler.)
-type warnCapture struct {
-	mu   sync.Mutex
-	msgs []string
-}
-
-func (h *warnCapture) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *warnCapture) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.msgs = append(h.msgs, r.Message)
-	return nil
-}
-
-func (h *warnCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *warnCapture) WithGroup(string) slog.Handler      { return h }
 
 // ── Validation & mapping (deterministic unit scope) ─────────────────
 
@@ -235,10 +216,7 @@ func TestListenResolvesThroughRawConnProvider(t *testing.T) {
 // ── Reconnect policy: re-listen loop + Warn logging ─────────────────
 
 func TestListenWithReconnectRetriesUntilStop(t *testing.T) {
-	capture := &warnCapture{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(capture))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	harness := obstest.New(t)
 
 	// First LISTEN succeeds (initial setup), then wait always fails with a
 	// transport error and every further LISTEN attempt fails → the policy must
@@ -250,6 +228,7 @@ func TestListenWithReconnectRetriesUntilStop(t *testing.T) {
 
 	c := newTestConn(fr)
 	c.o.CommandTimeout = 250 * time.Millisecond
+	c.obs = newObservability(harness)
 
 	payloads := make(chan string, 4)
 	stop, err := c.ListenWithReconnect("events", func(p string) { payloads <- p },
@@ -275,8 +254,8 @@ func TestListenWithReconnectRetriesUntilStop(t *testing.T) {
 	if n := listens(); n < 4 {
 		t.Fatalf("only %d re-listen attempts within 2s; reconnect policy stalled", n)
 	}
-	if n := capture.countContains("re-listen"); n < 1 {
-		t.Errorf("no WARN logged for re-listen attempts (msgs=%v)", capture.all())
+	if len(harness.Logs()) == 0 {
+		t.Error("no contract log recorded for re-listen attempts")
 	}
 
 	// Stop joins promptly and issues its compensating UNLISTEN (this fake
@@ -291,23 +270,6 @@ func TestListenWithReconnectRetriesUntilStop(t *testing.T) {
 	if last := trail[len(trail)-1]; last != "UNLISTEN events" {
 		t.Errorf("final statement = %q, want UNLISTEN events", last)
 	}
-}
-
-func (h *warnCapture) countContains(sub string) int {
-	// all() takes the lock; never lock again inside this method.
-	n := 0
-	for _, m := range h.all() {
-		if strings.Contains(m, sub) {
-			n++
-		}
-	}
-	return n
-}
-
-func (h *warnCapture) all() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]string(nil), h.msgs...)
 }
 
 // Give-up policy (plain Listen): first transport failure ends the loop.

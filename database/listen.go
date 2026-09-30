@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"sync"
 	"time"
@@ -192,7 +191,7 @@ func listenLoop(
 	for {
 		// A dead stored lineage cannot produce new valid tick contexts.
 		if base := c.base(); base.Err() != nil {
-			slog.Warn("database: listen stopped: stored context is done", "channel", channel)
+			c.logger().Warn(c.base(), "database listen stopped: context done", "channel", channel)
 			return
 		}
 		select {
@@ -223,12 +222,10 @@ func listenLoop(
 		default:
 		}
 		if !reconnect {
-			slog.Warn("database: listen aborted by connection error",
-				"channel", channel, "error", err)
+			c.logger().Warn(c.base(), "database listen aborted by connection error", "channel", channel, "error", err)
 			return
 		}
-		slog.Warn("database: listen failed; scheduling re-listen",
-			"channel", channel, "error", err, "retry_in", backoff)
+		c.logger().Warn(c.base(), "database listen failed; scheduling re-listen", "channel", channel, "error", err, "retry_in", backoff)
 
 		for {
 			if !sleepCancellable(backoff, stopCh) {
@@ -237,11 +234,10 @@ func listenLoop(
 			backoff = min(backoff*2, opts.MaxBackoff)
 
 			if _, lerr := c.Execute(listenSQL(channel)); lerr == nil {
-				slog.Warn("database: re-listen succeeded", "channel", channel)
+				c.logger().Info(c.base(), "database re-listen succeeded", "channel", channel)
 				break
 			} else {
-				slog.Warn("database: re-listen attempt failed",
-					"channel", channel, "error", lerr, "next_retry_in", backoff)
+				c.logger().Warn(c.base(), "database re-listen attempt failed", "channel", channel, "error", lerr, "next_retry_in", backoff)
 			}
 		}
 	}
