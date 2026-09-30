@@ -1,6 +1,13 @@
 package database
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
+	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/trace"
+)
 
 func TestStatementName(t *testing.T) {
 	cases := []struct {
@@ -30,5 +37,35 @@ func TestStatementName(t *testing.T) {
 		if got := spanNameFor(op, table); got != c.span {
 			t.Errorf("span name for %q = %q, want %q", c.sql, got, c.span)
 		}
+	}
+}
+
+func TestPGXTracerSkipsListenSessionControl(t *testing.T) {
+	h := telemetry.NewHarness(t)
+	tracer := &pgxTracer{obs: newObservability(h), options: Options{}}
+	for _, sql := range []string{"LISTEN outbox_events", "UNLISTEN outbox_events", "unlisten *"} {
+		ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: sql})
+		tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
+	}
+	if got := len(h.Spans()); got != 0 {
+		t.Fatalf("LISTEN/UNLISTEN spans = %d, want 0", got)
+	}
+	ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "SELECT 1"})
+	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
+	if got := len(h.Spans()); got != 1 {
+		t.Fatalf("ordinary statements must still be traced, spans = %d", got)
+	}
+}
+
+func TestAPISpansAreInternalSoStatementsCountOnceAsClient(t *testing.T) {
+	h := telemetry.NewHarness(t)
+	db := newTestDB(context.Background(), &fakeRunnerPool{})
+	db.obs = newObservability(h)
+	if _, err := db.ExecuteContext(context.Background(), "INSERT INTO t (a) VALUES ($1)", 1); err != nil {
+		t.Fatal(err)
+	}
+	spans := h.SpansByName("db.execute")
+	if len(spans) != 1 || spans[0].SpanKind() != trace.SpanKindInternal {
+		t.Fatalf("db.execute spans = %v, want one Internal span (the driver span is the Client one)", spans)
 	}
 }
