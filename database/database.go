@@ -4,6 +4,9 @@
 //
 //	env vars → Options → pgxpool.Pool → *DB / Repository[T]
 //
+// For conventional database/sql access, use NewSQLX. The pgx-backed DB stays
+// available for native COPY, batching and LISTEN/NOTIFY operations.
+//
 // The package mirrors the Hellnet .NET library Hellnet.Database:
 //
 //   - Executor-style raw SQL (Execute, Query[T], QueryRow[T], Scalar[T])
@@ -138,7 +141,7 @@ func splitHostPort(host string, port int) (string, int) {
 // for any unset value. It is fully self-contained: the caller does not need to
 // load env files beforehand.
 func LoadFromEnv() Options {
-	_ = env.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 	o := Default()
 	o.from(o)
 	return o
@@ -315,7 +318,7 @@ func defaultRetryEnabled(o *Options, d Options) {
 // explicitly via NewWithOptions; the context is captured once at construction
 // and propagated internally.
 func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
-	_ = env.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 
 	var o Options
 	if len(opts) > 0 {

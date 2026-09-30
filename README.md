@@ -3,7 +3,7 @@
 Biblioteca de infraestrutura de banco de dados PostgreSQL-first para Go. Configuração via environment variables, modular, cloud-native. Porta idiomática de [Hellnet.Database](https://github.com/guilhermelinosp/hellnet-dep-database) (.NET).
 
 ```
-Env vars → Options → pgxpool.Pool → *DB / *Conn / Repository[T]
+Env vars → Options → pgxpool.Pool (*DB) + sqlx.DB (*SQLX)
 ```
 
 ---
@@ -50,6 +50,19 @@ Linha por linha:
 ```bash
 go get github.com/guilhermelinosp/hellnet-lib-database/database
 ```
+
+### Hooks locais
+
+Instale os hooks uma vez no checkout antes de criar commits ou fazer push:
+
+```bash
+lefthook install
+```
+
+O `pre-commit` executa formatação, vet, lint, secrets scan e valida que
+`go mod tidy` não altera `go.mod` ou `go.sum`. O `pre-push` repete essa
+validação e executa os testes com race detector. Se a validação de módulos
+falhar, execute `go mod tidy`, revise as alterações e faça commit dos arquivos.
 
 ## Configuração
 
@@ -139,6 +152,29 @@ count, err := database.Scalar[int64](db, "SELECT COUNT(*) FROM orders")
 O mapeamento segue as convenções do pgx: campos exportados por nome ou tag `db:"coluna"` (use `db:"-"` para ignorar campos; colunas viram snake_case quando não há tag).
 
 **Contrato de mapeamento:** os SELECTs internos do `Repository[T]` projetam explicitamente as colunas de `T`, então structs parciais funcionam (tolerância estilo Dapper a colunas não mapeadas). Já em SQL cru com `Query[T]`/`QueryRow[T]`, o struct precisa cobrir **todas** as colunas retornadas — liste as colunas desejadas na query ou use um struct completo.
+
+### SQL convencional com sqlx
+
+Para queries e transações convencionais compatíveis com `database/sql`, use a
+superfície `SQLX`. Ela usa o driver pgx por baixo e oferece `GetContext`,
+`SelectContext`, `NamedExecContext` e os demais helpers do sqlx:
+
+```go
+sqlxDB, err := database.OpenSQLXFromEnv(ctx)
+if err != nil { /* ... */ }
+defer sqlxDB.Close()
+
+var order Order
+err = sqlxDB.GetContext(ctx, &order,
+    "SELECT id, status FROM orders WHERE id = $1", id)
+
+tx, err := sqlxDB.BeginTxx(ctx, nil)
+// Use tx.Commit/Rollback and apenas operações do sqlx nesta transação.
+```
+
+`DB` continua sendo a superfície pgx-native para `COPY`, batching,
+`LISTEN/NOTIFY`, retry e as transações `database.Tx`. Não misture um
+`*sqlx.Tx` com um `*database.Tx`; cada transação pertence ao pool que a criou.
 
 ### Transações
 
