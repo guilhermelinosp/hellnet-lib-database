@@ -18,6 +18,11 @@ linters:
     - nakedret
     - bodyclose
     - noctx
+    - contextcheck
+    - containedctx
+    - fatcontext
+    - depguard
+    - forbidigo
     - gosec
   settings:
     gocyclo:
@@ -26,11 +31,62 @@ linters:
       rules:
         - name: exported
           severity: warning
+    depguard:
+      rules:
+        production:
+          files:
+            - '$all'
+            - '!**/*_test.go'
+          deny:
+            - pkg: log
+              desc: use the telemetry contract logger
+            - pkg: go.opentelemetry.io/otel/sdk
+              desc: SDK is test-harness-only
+            - pkg: github.com/guilhermelinosp/hellnet-lib-telemetry/telemetrytest
+              desc: deprecated test package; use internal/obstest
+        no-prometheus:
+          files:
+            - '$all'
+            - '!**/*_test.go'
+            - '!**/database/metrics.go'
+          deny:
+            - pkg: github.com/prometheus/client_golang
+              desc: legacy Prometheus is allowed only in metrics.go
+    forbidigo:
+      forbid:
+        - pattern: 'slog.Debug'
+        - pattern: 'slog.Info'
+        - pattern: 'slog.Warn'
+        - pattern: 'slog.Error'
+        - pattern: 'slog.Default'
+        - pattern: 'otel.Tracer'
+        - pattern: 'otel.Meter'
+        - pattern: 'otel.GetMeterProvider'
+        - pattern: 'otel.GetTracerProvider'
+        - pattern: 'otel.GetTextMapPropagator'
   exclusions:
     paths:
       - "_test\\.go$"
       - "^_examples/"
+      - "internal/obstest/"
       - "^example/"
+    rules:
+      # TODO(telemetry-fase-D): remove after context-first DB construction lands.
+      - path: "database/core.go"
+        linters: [containedctx, depguard, forbidigo]
+      - path: "database/database.go"
+        linters: [contextcheck, depguard, forbidigo]
+      - path: "database/sqlx.go"
+        linters: [contextcheck]
+      # TODO(telemetry-fase-E): remove after contract logger replacement.
+      - path: "database/listen.go"
+        linters: [depguard, forbidigo]
+      - path: "database/resilience.go"
+        linters: [depguard, forbidigo]
+      - path: "database/transaction.go"
+        linters: [depguard, forbidigo]
+      - path: "database/view.go"
+        linters: [depguard, forbidigo]
 
 formatters:
   enable:
