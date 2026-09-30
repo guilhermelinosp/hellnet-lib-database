@@ -1,5 +1,12 @@
 ## Unreleased
 
+- The API spans `db.execute`, `db.query` and `db.scalar` are now `Internal`
+  instead of `Client`: they wrap the retry attempts, and each attempt already has
+  its own driver (`Client`) statement span, so a call no longer counts twice as a
+  client in service graphs and span metrics.
+- `LISTEN` and `UNLISTEN` no longer create statement spans (session control, one
+  root trace per reconnect).
+
 - Driver-level statement spans are named after the SQL operation and table
   (`INSERT outbox_events`, `SELECT users`, `BEGIN`, `COMMIT`) instead of
   `db.query`, and carry `db.operation.name` and `db.collection.name`; a

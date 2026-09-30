@@ -360,7 +360,7 @@ func (db *DB) Execute(sql string, args ...any) (int64, error) {
 // ExecuteContext executes a command as a child of ctx.
 func (db *DB) ExecuteContext(ctx context.Context, sql string, args ...any) (n int64, err error) {
 	ctx = contextOrBackground(ctx)
-	ctx, span := db.obs.tracer.Start(ctx, "db.execute", trace.WithSpanKind(trace.SpanKindClient))
+	ctx, span := db.obs.tracer.Start(ctx, "db.execute", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
 	defer func() {
@@ -398,7 +398,7 @@ func Query[T any](db *DB, sql string, args ...any) ([]T, error) {
 // QueryContext runs a typed query as a child of ctx.
 func QueryContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out []T, err error) {
 	ctx = contextOrBackground(ctx)
-	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindClient))
+	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
 	defer func() {
@@ -434,7 +434,7 @@ func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 // QueryRowContext runs a single-row query as a child of ctx.
 func QueryRowContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out T, found bool, err error) {
 	ctx = contextOrBackground(ctx)
-	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindClient))
+	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
 	defer func() {
@@ -465,7 +465,7 @@ func Scalar[T any](db *DB, sql string, args ...any) (T, error) {
 // ScalarContext runs a scalar query as a child of ctx.
 func ScalarContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out T, err error) {
 	ctx = contextOrBackground(ctx)
-	ctx, span := db.obs.tracer.Start(ctx, "db.scalar", trace.WithSpanKind(trace.SpanKindClient))
+	ctx, span := db.obs.tracer.Start(ctx, "db.scalar", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
 	defer func() {

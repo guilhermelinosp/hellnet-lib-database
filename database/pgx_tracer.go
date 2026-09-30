@@ -20,6 +20,10 @@ type pgxTracer struct {
 
 func (t *pgxTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	operation, table := statementName(data.SQL)
+	if operation == "LISTEN" || operation == "UNLISTEN" {
+		// Session control, not a query: one root trace per (re)connect is noise.
+		return ctx
+	}
 	name := spanNameFor(operation, table)
 	if operation == "" {
 		operation = "query"
