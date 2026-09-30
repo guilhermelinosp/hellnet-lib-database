@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/guilhermelinosp/hellnet-lib-database/internal/obstest"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,7 +17,7 @@ func (h *contextHook) BeforeQueryContext(ctx context.Context, _ QueryInfo) { h.b
 func (h *contextHook) AfterQueryContext(ctx context.Context, _ QueryInfo)  { h.after = ctx }
 
 func TestExecuteContextUsesCallerSpan(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	db := newTestDB(context.Background(), &fakeRunnerPool{})
 	db.obs = newObservability(h)
 	ctx, parent := h.TracerProvider().Tracer("caller").Start(context.Background(), "caller")
@@ -47,7 +47,7 @@ func TestContextQueryHookReceivesCallerContext(t *testing.T) {
 }
 
 func TestPGXTracerOmitsArguments(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	tracer := &pgxTracer{obs: newObservability(h), options: Options{}}
 	ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "SELECT * FROM users WHERE id=$1", Args: []any{"secret"}})
 	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
@@ -63,7 +63,7 @@ func TestPGXTracerOmitsArguments(t *testing.T) {
 }
 
 func TestPoolMetricsCallbackIsUnregisteredWithDBLifecycle(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	cfg, err := pgxpool.ParseConfig("postgres://app:secret@postgres.internal:5432/orders")
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
