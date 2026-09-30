@@ -35,13 +35,13 @@ Pense no **PostgreSQL** como um caderno gigante e bem-organizado da escola, onde
 
 ```go
 ctx := context.Background()  // cria o crachá do estagiário: de quem é o pedido e até quando vale
-db, err := database.NewWithOptions(ctx) // lê as env vars; use WithInstrumentation para telemetry
+db, err := database.New(ctx, tel) // lê as env vars; tel é a instrumentação (ou nil)
 ```
 
 Linha por linha:
 
 - `ctx := context.Background()` — cria um **contexto**: pense nele como o crachá do estagiário, que diz de quem é o pedido e até quando ele vale (prazos e cancelamentos). Você cria UMA vez, no início da aplicação;
-- `db, err := database.NewWithOptions(ctx)` — lê as configurações e abre o pool; o `err` avisa se algo deu errado na contratação.
+- `db, err := database.New(ctx, tel)` — lê as configurações e abre o pool; o `err` avisa se algo deu errado na contratação.
 
 ---
 
@@ -82,7 +82,7 @@ export DATABASE_PASSWORD=password
 // O contexto da aplicação é passado UMA VEZ, na construção:
 ctx := context.Background() // ou um ctx app-scoped/long-lived
 
-db, err := database.NewWithOptions(ctx)
+db, err := database.New(ctx, tel)
 ```
 
 > **Env-first é self-contained.** `OpenFromEnv`/`LoadFromEnv` carregam o `.env`
@@ -100,7 +100,7 @@ pela lib com os timeouts de cada operação (`CommandTimeout`,
 
 ```go
 ctx := context.Background()
-db, err := database.NewWithOptions(ctx) // env-first; passe Options para configuração explícita
+db, err := database.New(ctx, tel) // env-first; passe Options para configuração explícita
 
 n, err := db.Execute("UPDATE orders SET status = $1 WHERE id = $2", "done", id) // sem ctx
 page, err := repo.Paginate(spec, 1, 20)                                         // sem ctx
@@ -113,7 +113,7 @@ page, err := repo.Paginate(spec, 1, 20)                                         
 ### Via options explícitas
 
 ```go
-db, err := database.NewWithOptions(ctx, database.Options{
+db, err := database.New(ctx, tel, database.Options{
     Host:     "pg.internal",
     Database: "orders",
     Username: "app",
@@ -424,7 +424,7 @@ cliente do [`hellnet-lib-telemetry`](https://github.com/guilhermelinosp/hellnet-
 — usando a opção aditiva:
 
 ```go
-db, err := database.NewWithOptions(ctx, options, database.WithInstrumentation(tel))
+db, err := database.New(ctx, tel, options)
 ```
 
 As APIs ctx-first emitem `db.execute`, `db.query` e `db.scalar` como spans

@@ -1,5 +1,10 @@
 ## Unreleased
 
+- `New` and `MustNew` now take an `instrument.Instrumentation` (for example a
+  `*telemetry.Telemetry`, or nil) instead of the legacy `telemetry.Client` and
+  are no longer deprecated; `New(ctx, tel)` is env-first. `OpenFromEnv` is
+  deprecated in favor of `New`.
+
 - Added `WithInstrumentation` to `NewWithOptions` and instrumentation scope/provider initialization using telemetry v1.9.1.
 - Deprecated constructor telemetry-client paths in favor of the instrument contract.
 - Added ctx-first `ExecuteContext`, typed query context functions, connection/transaction context variants, and caller-parented database spans.

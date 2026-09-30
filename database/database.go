@@ -304,24 +304,13 @@ func defaultRetryEnabled(o *Options, d Options) {
 	}
 }
 
-// New creates a DB from explicit options, or from the environment when called
-// with a single ctx plus no options (env-first, mirroring hellnet-lib-cache's
-// New). In the no-options form it loads DATABASE_* (and a .env file)
-// via LoadFromEnv. The context is captured ONCE here and propagated internally
-// to every later operation (per-statement timeouts derive from it) — public
-// methods do not take a context.Context. No connection is established yet;
-// call Ping to verify.
-// New follows the zero-config constructor pattern shared by the Hellnet libs:
-// it loads .env and resolves every option from DATABASE_*.
-// HELLNET_* fallback) internally, so callers just write:
-//
-//	db, err := database.New()
-//
-// A nil context degrades to Background (never panics). Options can be supplied
-// explicitly via NewWithOptions; the context is captured once at construction
-// and propagated internally.
-// Deprecated: use NewWithOptions with WithInstrumentation.
-func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
+// New creates a DB. With no options it loads DATABASE_* (and a .env file)
+// through LoadFromEnv; pass a single Options to configure it explicitly.
+// inst is the Hellnet observability contract (for example a *telemetry.Telemetry);
+// a nil inst disables telemetry. The context is captured once and used for the
+// initial connection setup and for the context-less compatibility methods. No
+// connection is established yet; call PingContext to verify.
+func New(ctx context.Context, inst instrument.Instrumentation, opts ...Options) (*DB, error) {
 	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 
 	var o Options
@@ -330,11 +319,13 @@ func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error
 	} else {
 		o = LoadFromEnv()
 	}
-	db, err := newDB(ctx, o, legacyInstrumentation(ops))
+	db, err := newDB(ctx, o, inst)
 	if err != nil {
 		return nil, err
 	}
-	db.ops = ops
+	if client, ok := inst.(telemetry.Client); ok {
+		db.ops = client
+	}
 	return db, nil
 }
 
@@ -410,18 +401,10 @@ func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB
 	return db, nil
 }
 
-func legacyInstrumentation(ops telemetry.Client) instrument.Instrumentation {
-	if inst, ok := any(ops).(instrument.Instrumentation); ok {
-		return inst
-	}
-	return nil
-}
-
 // MustNew is like New but panics on failure. Useful at service startup where a
 // misconfiguration should fail fast.
-// Deprecated: use NewWithOptions with WithInstrumentation.
-func MustNew(ctx context.Context, ops telemetry.Client, opts ...Options) *DB {
-	db, err := New(ctx, ops, opts...)
+func MustNew(ctx context.Context, inst instrument.Instrumentation, opts ...Options) *DB {
+	db, err := New(ctx, inst, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -432,9 +415,10 @@ func MustNew(ctx context.Context, ops telemetry.Client, opts ...Options) *DB {
 // the DB. It is the equivalent of the .NET AddHellnetDatabase() env-first
 // overload and is a thin wrapper over New. The env loading is fully contained
 // in the library — no external DotEnv call is required by the caller.
-// Deprecated: use NewWithOptions with WithInstrumentation and LoadFromEnv.
-func OpenFromEnv(ctx context.Context, ops telemetry.Client) (*DB, error) {
-	return New(ctx, ops)
+//
+// Deprecated: use New, which is env-first when called without options.
+func OpenFromEnv(ctx context.Context, inst instrument.Instrumentation) (*DB, error) {
+	return New(ctx, inst)
 }
 
 // Close releases the underlying pool.
@@ -447,6 +431,7 @@ func (db *DB) Close() error {
 }
 
 // Ping verifies database connectivity using the construction context.
+//
 // Deprecated: use PingContext with the caller's context.
 func (db *DB) Ping() error {
 	return db.PingContext(db.base())
