@@ -307,12 +307,14 @@ func defaultRetryEnabled(o *Options, d Options) {
 // New creates a DB. With no options it loads DATABASE_* (and a .env file)
 // through LoadFromEnv; pass a single Options to configure it explicitly.
 // inst is the Hellnet observability contract (for example a *telemetry.Telemetry);
-// a nil inst disables telemetry. The context is captured once and used for the
+// a nil inst (or a nil pointer such as a nil *telemetry.Telemetry) disables
+// telemetry. The context is captured once and used for the
 // initial connection setup and for the context-less compatibility methods. No
 // connection is established yet; call PingContext to verify.
 func New(ctx context.Context, inst instrument.Instrumentation, opts ...Options) (*DB, error) {
 	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 
+	inst = instrument.Resolve(inst)
 	var o Options
 	if len(opts) > 0 {
 		o = opts[0]
@@ -356,6 +358,7 @@ func NewWithOptions(ctx context.Context, opts ...Options) (*DB, error) {
 
 // newDB is the shared construction seam behind New/NewWithOptions.
 func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB, error) { //nolint:contextcheck // construction context is stored for compatibility with context-less methods.
+	inst = instrument.Resolve(inst)
 	obs := newObservability(inst)
 	// Defensive: documented as required, but degrade instead of panicking on a
 	// programming slip during startup. Warned ONCE here at construction —

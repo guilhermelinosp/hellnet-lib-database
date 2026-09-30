@@ -49,3 +49,13 @@ func TestNewReportsMissingConfiguration(t *testing.T) {
 		t.Fatal("New must fail when required DATABASE_* variables are missing")
 	}
 }
+
+func TestNewAcceptsTypedNilTelemetry(t *testing.T) {
+	setOfflineEnv(t)
+	var tel *telemetry.Telemetry
+	db, err := New(context.Background(), tel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+}
