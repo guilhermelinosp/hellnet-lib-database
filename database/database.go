@@ -141,7 +141,7 @@ func splitHostPort(host string, port int) (string, int) {
 // for any unset value. It is fully self-contained: the caller does not need to
 // load env files beforehand.
 func LoadFromEnv() Options {
-	_ = env.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 	o := Default()
 	o.from(o)
 	return o
@@ -318,7 +318,7 @@ func defaultRetryEnabled(o *Options, d Options) {
 // explicitly via NewWithOptions; the context is captured once at construction
 // and propagated internally.
 func New(ctx context.Context, ops telemetry.Client, opts ...Options) (*DB, error) {
-	_ = env.LoadDotEnv("DATABASE_ENV_FILE", "ENV_FILE")
+	_ = env.Environment("DATABASE_ENV_FILE", "ENV_FILE")
 
 	var o Options
 	if len(opts) > 0 {

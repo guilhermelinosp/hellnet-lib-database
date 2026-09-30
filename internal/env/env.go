@@ -9,8 +9,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// LoadDotEnv loads optional dotenv files. Environment variables already set win.
-func LoadDotEnv(files ...string) error {
+// Environment loads optional dotenv files. Environment variables already set win.
+func Environment(files ...string) error {
 	if len(files) == 0 {
 		return godotenv.Load()
 	}
