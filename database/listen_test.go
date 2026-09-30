@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guilhermelinosp/hellnet-lib-database/internal/obstest"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -216,7 +216,7 @@ func TestListenResolvesThroughRawConnProvider(t *testing.T) {
 // ── Reconnect policy: re-listen loop + Warn logging ─────────────────
 
 func TestListenWithReconnectRetriesUntilStop(t *testing.T) {
-	harness := obstest.New(t)
+	harness := telemetry.NewHarness(t)
 
 	// First LISTEN succeeds (initial setup), then wait always fails with a
 	// transport error and every further LISTEN attempt fails → the policy must

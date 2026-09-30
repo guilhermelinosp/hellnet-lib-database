@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/guilhermelinosp/hellnet-lib-database/internal/obstest"
+	"github.com/guilhermelinosp/hellnet-lib-telemetry/telemetry"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -17,7 +17,7 @@ func TestNewSQLXRejectsInvalidOptionsBeforeOpening(t *testing.T) {
 }
 
 func TestSQLXPGXConfigWiresTracer(t *testing.T) {
-	h := obstest.New(t)
+	h := telemetry.NewHarness(t)
 	cfg, err := sqlxPGXConfig(Options{
 		Host:            "postgres.internal",
 		Port:            5432,
