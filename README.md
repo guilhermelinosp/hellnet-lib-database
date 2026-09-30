@@ -51,6 +51,19 @@ Linha por linha:
 go get github.com/guilhermelinosp/hellnet-lib-database/database
 ```
 
+### Hooks locais
+
+Instale os hooks uma vez no checkout antes de criar commits ou fazer push:
+
+```bash
+lefthook install
+```
+
+O `pre-commit` executa formatação, vet, lint, secrets scan e valida que
+`go mod tidy` não altera `go.mod` ou `go.sum`. O `pre-push` repete essa
+validação e executa os testes com race detector. Se a validação de módulos
+falhar, execute `go mod tidy`, revise as alterações e faça commit dos arquivos.
+
 ## Configuração
 
 > *Analogia da seção júnior:* configurar é dar ao estagiário o endereço do caderno (host, porta, senha) — sem endereço, ele não chega lá.

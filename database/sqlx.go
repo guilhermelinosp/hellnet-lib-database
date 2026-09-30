@@ -55,7 +55,9 @@ func NewSQLX(ctx context.Context, opts ...Options) (*SQLX, error) {
 	err = xdb.PingContext(pingCtx)
 	cancel()
 	if err != nil {
-		xdb.Close()
+		if closeErr := xdb.Close(); closeErr != nil {
+			return nil, fmt.Errorf("database: ping sqlx pool: %w (close: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("database: ping sqlx pool: %w", err)
 	}
 
@@ -84,5 +86,5 @@ func (db *SQLX) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, err
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return db.DB.BeginTxx(ctx, opts)
+	return db.BeginTxx(ctx, opts)
 }
