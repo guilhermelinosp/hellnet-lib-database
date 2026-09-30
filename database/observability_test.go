@@ -51,7 +51,7 @@ func TestPGXTracerOmitsArguments(t *testing.T) {
 	tracer := &pgxTracer{obs: newObservability(h), options: Options{}}
 	ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "SELECT * FROM users WHERE id=$1", Args: []any{"secret"}})
 	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
-	spans := h.SpansByName("db.query")
+	spans := h.SpansByName("SELECT users")
 	if len(spans) != 1 {
 		t.Fatalf("query spans = %d", len(spans))
 	}
