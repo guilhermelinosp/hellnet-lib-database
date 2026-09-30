@@ -19,17 +19,25 @@ type pgxTracer struct {
 }
 
 func (t *pgxTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	operation, table := statementName(data.SQL)
+	name := spanNameFor(operation, table)
+	if operation == "" {
+		operation = "query"
+	}
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "postgresql"),
-		attribute.String("db.operation.name", "query"),
+		attribute.String("db.operation.name", operation),
 		attribute.String("db.namespace", t.options.Database),
 		attribute.String("server.address", t.options.Host),
 		attribute.Int("server.port", t.options.Port),
 	}
+	if table != "" {
+		attrs = append(attrs, attribute.String("db.collection.name", table))
+	}
 	if !t.options.HideQueryArgs {
 		attrs = append(attrs, attribute.String("db.query.text", data.SQL))
 	}
-	ctx, span := t.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
+	ctx, span := t.obs.tracer.Start(ctx, name, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
 	return context.WithValue(ctx, pgxSpanKey{}, span)
 }
 

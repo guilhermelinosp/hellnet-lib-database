@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Driver-level statement spans are named after the SQL operation and table
+  (`INSERT outbox_events`, `SELECT users`, `BEGIN`, `COMMIT`) instead of
+  `db.query`, and carry `db.operation.name` and `db.collection.name`; a
+  statement that cannot be classified keeps `db.query`.
+
 - `New` resolves its instrumentation with `instrument.Resolve`: a nil value or a nil pointer
   (for example a nil `*telemetry.Telemetry`) disables telemetry instead of panicking.
 
