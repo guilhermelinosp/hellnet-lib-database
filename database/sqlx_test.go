@@ -36,7 +36,7 @@ func TestSQLXPGXConfigWiresTracer(t *testing.T) {
 
 	ctx := tracer.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: "SELECT 1"})
 	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
-	if spans := h.SpansByName("SELECT"); len(spans) != 1 {
+	if spans := h.SpansByName("db.select"); len(spans) != 1 {
 		t.Fatalf("SQLX driver spans = %d, want 1", len(spans))
 	}
 }
