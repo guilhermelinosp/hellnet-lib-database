@@ -49,7 +49,7 @@ func TxQuery[T any](tx *Tx, sql string, args ...any) ([]T, error) {
 
 // TxQueryContext maps rows inside the transaction using the caller's context.
 func TxQueryContext[T any](ctx context.Context, tx *Tx, sql string, args ...any) ([]T, error) {
-	return runQueryContext[T](&tx.conn, contextOrBackground(ctx), sql, args...)
+	return runQueryContext[T](contextOrBackground(ctx), &tx.conn, sql, args...)
 }
 
 // TxQueryRow runs a query expected to return at most one row inside the
@@ -67,7 +67,7 @@ func TxQueryRow[T any](tx *Tx, sql string, args ...any) (T, bool, error) {
 
 // TxQueryRowContext maps one row inside the transaction using the caller's context.
 func TxQueryRowContext[T any](ctx context.Context, tx *Tx, sql string, args ...any) (T, bool, error) {
-	return runQueryRowContext[T](&tx.conn, contextOrBackground(ctx), sql, args...)
+	return runQueryRowContext[T](contextOrBackground(ctx), &tx.conn, sql, args...)
 }
 
 // TxScalar scans a single-value result inside the transaction.
@@ -83,7 +83,7 @@ func TxScalar[T any](tx *Tx, sql string, args ...any) (T, error) {
 
 // TxScalarContext scans one value inside the transaction using the caller's context.
 func TxScalarContext[T any](ctx context.Context, tx *Tx, sql string, args ...any) (T, error) {
-	return runScalarContext[T](&tx.conn, contextOrBackground(ctx), sql, args...)
+	return runScalarContext[T](contextOrBackground(ctx), &tx.conn, sql, args...)
 }
 
 // Commit commits the transaction. Use it only for transactions started via

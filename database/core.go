@@ -206,10 +206,10 @@ func track(c *conn, start time.Time, sql string) {
 // de sucesso e rowsUnknown caso contrário. Com retry habilitado cada TENTATIVA
 // dispara o par before/after (documentado no contrato de QueryHook).
 func runQuery[T any](c *conn, sql string, args ...any) ([]T, error) {
-	return runQueryContext[T](c, c.base(), sql, args...)
+	return runQueryContext[T](c.base(), c, sql, args...)
 }
 
-func runQueryContext[T any](c *conn, parent context.Context, sql string, args ...any) ([]T, error) {
+func runQueryContext[T any](parent context.Context, c *conn, sql string, args ...any) ([]T, error) {
 	c.fireBeforeContext(parent, OpQuery, sql, args)
 
 	cctx, cancel := timeout(parent, c.o.CommandTimeout)
@@ -241,10 +241,10 @@ func runQueryContext[T any](c *conn, parent context.Context, sql string, args ..
 // Hooks: resultado vazio NÃO é erro para os hooks (semântica idêntica à
 // biblioteca): AfterHook chega com Err=nil e Rows=0. Encontrado: Rows=1.
 func runQueryRow[T any](c *conn, sql string, args ...any) (T, bool, error) {
-	return runQueryRowContext[T](c, c.base(), sql, args...)
+	return runQueryRowContext[T](c.base(), c, sql, args...)
 }
 
-func runQueryRowContext[T any](c *conn, parent context.Context, sql string, args ...any) (T, bool, error) {
+func runQueryRowContext[T any](parent context.Context, c *conn, sql string, args ...any) (T, bool, error) {
 	var zero T
 
 	c.fireBeforeContext(parent, OpQueryRow, sql, args)
@@ -282,10 +282,10 @@ func runQueryRowContext[T any](c *conn, parent context.Context, sql string, args
 // Hooks: Rows permanece rowsUnknown — a existência/contagem de linhas não é
 // fato observável pelo contrato scalar.
 func runScalar[T any](c *conn, sql string, args ...any) (T, error) {
-	return runScalarContext[T](c, c.base(), sql, args...)
+	return runScalarContext[T](c.base(), c, sql, args...)
 }
 
-func runScalarContext[T any](c *conn, parent context.Context, sql string, args ...any) (T, error) {
+func runScalarContext[T any](parent context.Context, c *conn, sql string, args ...any) (T, error) {
 	c.fireBeforeContext(parent, OpScalar, sql, args)
 
 	cctx, cancel := timeout(parent, c.o.CommandTimeout)
@@ -410,7 +410,7 @@ func QueryContext[T any](ctx context.Context, db *DB, sql string, args ...any) (
 		}
 		db.obs.observeOperation(ctx, "query", result, started)
 	}()
-	return retried(ctx, db.retry, func() ([]T, error) { return runQueryContext[T](&db.conn, ctx, sql, args...) })
+	return retried(ctx, db.retry, func() ([]T, error) { return runQueryContext[T](ctx, &db.conn, sql, args...) })
 }
 
 // QueryRow runs a query expected to return at most one row. Transient failures
@@ -448,7 +448,7 @@ func QueryRowContext[T any](ctx context.Context, db *DB, sql string, args ...any
 	}()
 	err = db.retry.do(ctx, func() error {
 		var inner error
-		out, found, inner = runQueryRowContext[T](&db.conn, ctx, sql, args...)
+		out, found, inner = runQueryRowContext[T](ctx, &db.conn, sql, args...)
 		return inner
 	})
 	return out, found, err
@@ -477,7 +477,7 @@ func ScalarContext[T any](ctx context.Context, db *DB, sql string, args ...any) 
 		}
 		db.obs.observeOperation(ctx, "scalar", result, started)
 	}()
-	return retried(ctx, db.retry, func() (T, error) { return runScalarContext[T](&db.conn, ctx, sql, args...) })
+	return retried(ctx, db.retry, func() (T, error) { return runScalarContext[T](ctx, &db.conn, sql, args...) })
 }
 
 func contextOrBackground(ctx context.Context) context.Context {

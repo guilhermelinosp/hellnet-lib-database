@@ -175,7 +175,7 @@ func ConnQuery[T any](c *Conn, sql string, args ...any) ([]T, error) {
 
 // ConnQueryContext maps rows using the caller's context. No retry is performed.
 func ConnQueryContext[T any](ctx context.Context, c *Conn, sql string, args ...any) ([]T, error) {
-	return runQueryContext[T](&c.conn, contextOrBackground(ctx), sql, args...)
+	return runQueryContext[T](contextOrBackground(ctx), &c.conn, sql, args...)
 }
 
 // ConnQueryRow runs a query expected to return at most one row on the dedicated
@@ -193,7 +193,7 @@ func ConnQueryRow[T any](c *Conn, sql string, args ...any) (T, bool, error) {
 
 // ConnQueryRowContext maps one row using the caller's context. No retry is performed.
 func ConnQueryRowContext[T any](ctx context.Context, c *Conn, sql string, args ...any) (T, bool, error) {
-	return runQueryRowContext[T](&c.conn, contextOrBackground(ctx), sql, args...)
+	return runQueryRowContext[T](contextOrBackground(ctx), &c.conn, sql, args...)
 }
 
 // ConnScalar scans a single value on the dedicated connection. No retry.
@@ -209,7 +209,7 @@ func ConnScalar[T any](c *Conn, sql string, args ...any) (T, error) {
 
 // ConnScalarContext scans one value using the caller's context. No retry is performed.
 func ConnScalarContext[T any](ctx context.Context, c *Conn, sql string, args ...any) (T, error) {
-	return runScalarContext[T](&c.conn, contextOrBackground(ctx), sql, args...)
+	return runScalarContext[T](contextOrBackground(ctx), &c.conn, sql, args...)
 }
 
 var (
