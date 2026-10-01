@@ -126,8 +126,10 @@ func (c *Conn) listen(channel string, handler func(payload string), opts ListenO
 	}
 
 	// Initial LISTEN interpolated with a strictly validated identifier — no
-	// bind parameters exist for LISTEN at the protocol level.
-	if _, err := c.Execute(listenSQL(channel)); err != nil {
+	// bind parameters exist for LISTEN at the protocol level. It runs on the raw
+	// conn: session control must not open a db.execute span (an orphan trace per
+	// (re)connect).
+	if _, err := c.conn.Execute(listenSQL(channel)); err != nil {
 		return nil, fmt.Errorf("database: listen %q: %w", channel, err)
 	}
 

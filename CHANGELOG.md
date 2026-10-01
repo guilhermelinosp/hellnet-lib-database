@@ -1,5 +1,9 @@
 ## Unreleased
 
+- `Conn.Listen`/`ListenWithReconnect` no longer open a `db.execute` span for the
+  initial `LISTEN`: it ran through the legacy `Conn.Execute` (a span via the
+  telemetry client), leaving one orphan root trace per (re)connect.
+
 - Driver statement spans use low-cardinality names: `db.insert`, `db.select`,
   `db.update`, `db.delete` and `db.transaction` (BEGIN/COMMIT/ROLLBACK), or
   `db.query` when a statement cannot be classified. A `WITH` (CTE) statement is
