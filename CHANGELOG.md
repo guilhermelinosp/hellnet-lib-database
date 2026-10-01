@@ -1,5 +1,11 @@
 ## Unreleased
 
+- Driver statement spans use low-cardinality names: `db.insert`, `db.select`,
+  `db.update`, `db.delete` and `db.transaction` (BEGIN/COMMIT/ROLLBACK), or
+  `db.query` when a statement cannot be classified. A `WITH` (CTE) statement is
+  named after its main statement. The table stays in `db.collection.name` and
+  the verb in `db.operation.name`.
+
 - The API spans `db.execute`, `db.query` and `db.scalar` are now `Internal`
   instead of `Client`: they wrap the retry attempts, and each attempt already has
   its own driver (`Client`) statement span, so a call no longer counts twice as a

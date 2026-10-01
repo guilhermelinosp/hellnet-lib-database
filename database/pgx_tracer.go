@@ -24,7 +24,7 @@ func (t *pgxTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.T
 		// Session control, not a query: one root trace per (re)connect is noise.
 		return ctx
 	}
-	name := spanNameFor(operation, table)
+	name := spanNameFor(operation)
 	if operation == "" {
 		operation = "query"
 	}
