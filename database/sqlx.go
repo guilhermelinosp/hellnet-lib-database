@@ -28,10 +28,6 @@ type SQLX struct {
 // DATABASE_* when no options are supplied. It verifies connectivity before
 // returning, matching the fail-fast behavior of Connect.
 func NewSQLX(ctx context.Context, opts ...Options) (*SQLX, error) { //nolint:contextcheck // constructor uses ctx only to bound the initial Ping.
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	o := LoadFromEnv()
 	if len(opts) > 0 {
 		o = opts[0]
@@ -100,8 +96,5 @@ func (db *SQLX) Options() Options {
 // It is declared explicitly to make the sqlx transaction boundary visible
 // beside DB.Transactional, whose callback uses pgx.Tx.
 func (db *SQLX) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sqlx.Tx, error) { //nolint:contextcheck // forwards ctx to sqlx's transaction boundary.
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	return db.BeginTxx(ctx, opts)
 }

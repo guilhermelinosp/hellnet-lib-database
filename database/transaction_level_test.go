@@ -131,7 +131,7 @@ func TestDBTransactionalLevelUnsupportedPool(t *testing.T) {
 
 func TestConnTransactionalLevelPlumbsOptions(t *testing.T) {
 	pool := newRecordingPool()
-	c := &Conn{conn: conn{r: pool, o: Options{CommandTimeout: 2 * time.Second, ConnectionTimeout: 100 * time.Millisecond}}}
+	c := &Conn{conn: conn{r: pool, ctx: context.Background(), o: Options{CommandTimeout: 2 * time.Second, ConnectionTimeout: 100 * time.Millisecond}}}
 
 	err := c.TransactionalLevel("SERIALIZABLE", func(tx *Tx) error { return nil })
 	if err != nil {
@@ -149,7 +149,7 @@ func TestConnTransactionalLevelPlumbsOptions(t *testing.T) {
 
 func TestConnTransactionalLevelUnsupportedRunner(t *testing.T) {
 	gate := &fakePoolGate{}
-	c := &Conn{conn: conn{r: gate, o: Options{CommandTimeout: time.Second, ConnectionTimeout: time.Second}}}
+	c := &Conn{conn: conn{r: gate, ctx: context.Background(), o: Options{CommandTimeout: time.Second, ConnectionTimeout: time.Second}}}
 
 	err := c.TransactionalLevel("read committed", func(*Tx) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "connection does not support transaction isolation levels") {

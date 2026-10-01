@@ -75,7 +75,7 @@ func TestPoolMetricsCallbackIsUnregisteredWithDBLifecycle(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	registration := registerPoolMetrics(newObservability(h), pool)
+	registration := registerPoolMetrics(context.Background(), newObservability(h), pool)
 	if registration == nil {
 		t.Fatal("registerPoolMetrics() returned nil")
 	}

@@ -360,14 +360,6 @@ func NewWithOptions(ctx context.Context, opts ...Options) (*DB, error) {
 func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB, error) { //nolint:contextcheck // construction context is stored for compatibility with context-less methods.
 	inst = instrument.Resolve(inst)
 	obs := newObservability(inst)
-	// Defensive: documented as required, but degrade instead of panicking on a
-	// programming slip during startup. Warned ONCE here at construction —
-	// never per operation (same approach as hellnet-lib-cache).
-	if ctx == nil {
-		obs.logger.Warn(context.TODO(), "database nil construction context; using Background")
-		ctx = context.Background()
-	}
-
 	o = withDefaults(o)
 	if err := Validate(o); err != nil {
 		return nil, err
@@ -387,7 +379,7 @@ func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB
 
 	// Pool creation stays bound to Background: the pool outlives the
 	// construction-time context, whose lifetime only bounds New itself.
-	rawPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	rawPool, err := pgxpool.NewWithConfig(context.Background(), cfg) //nolint:contextcheck // the pool outlives the constructor context (its min-connection setup must not be canceled with it)
 	if err != nil {
 		return nil, fmt.Errorf("database: create pool: %w", err)
 	}
@@ -400,7 +392,7 @@ func newDB(ctx context.Context, o Options, inst instrument.Instrumentation) (*DB
 		pool:  pool,
 		retry: NewRetryPolicy(o.RetryEnabled, o.RetryMaxCount, o.RetryBaseDelay).withObservability(obs),
 	}
-	db.poolMetrics = registerPoolMetrics(obs, rawPool)
+	db.poolMetrics = registerPoolMetrics(ctx, obs, rawPool)
 	return db, nil
 }
 
@@ -443,7 +435,7 @@ func (db *DB) Ping() error {
 // PingContext verifies database connectivity as a child of ctx. Register it
 // in the service's readiness endpoint when database connectivity is required.
 func (db *DB) PingContext(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(contextOrBackground(ctx), db.o.ConnectionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, db.o.ConnectionTimeout)
 	defer cancel()
 	return db.pool.Ping(ctx)
 }

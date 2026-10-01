@@ -49,7 +49,7 @@ func (c *recordingCopier) CopyFrom(ctx context.Context, tableName pgx.Identifier
 // New/Connect would force a real pool/link these fakes replace.
 func newTestConn(r runner) *Conn {
 	return &Conn{
-		conn: conn{r: r},
+		conn: conn{r: r, ctx: context.Background()},
 	}
 }
 

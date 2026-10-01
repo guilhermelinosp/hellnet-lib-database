@@ -8,20 +8,20 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-func registerPoolMetrics(obs observability, pool *pgxpool.Pool) metric.Registration {
+func registerPoolMetrics(ctx context.Context, obs observability, pool *pgxpool.Pool) metric.Registration {
 	used, err := obs.meter.Int64ObservableGauge("db.client.connection.count", metric.WithUnit("{connection}"))
 	if err != nil {
-		obs.logger.Error(context.TODO(), "database pool metric creation failed", "metric", "db.client.connection.count", "error", err)
+		obs.logger.Error(ctx, "database pool metric creation failed", "metric", "db.client.connection.count", "error", err)
 		return nil
 	}
 	max, err := obs.meter.Int64ObservableGauge("db.client.connection.max", metric.WithUnit("{connection}"))
 	if err != nil {
-		obs.logger.Error(context.TODO(), "database pool metric creation failed", "metric", "db.client.connection.max", "error", err)
+		obs.logger.Error(ctx, "database pool metric creation failed", "metric", "db.client.connection.max", "error", err)
 		return nil
 	}
 	wait, err := obs.meter.Float64ObservableGauge("db.client.connection.wait_time", metric.WithUnit("s"))
 	if err != nil {
-		obs.logger.Error(context.TODO(), "database pool metric creation failed", "metric", "db.client.connection.wait_time", "error", err)
+		obs.logger.Error(ctx, "database pool metric creation failed", "metric", "db.client.connection.wait_time", "error", err)
 		return nil
 	}
 	registration, err := obs.meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
@@ -33,7 +33,7 @@ func registerPoolMetrics(obs observability, pool *pgxpool.Pool) metric.Registrat
 		return nil
 	}, used, max, wait)
 	if err != nil {
-		obs.logger.Error(context.TODO(), "database pool metric callback registration failed", "error", err)
+		obs.logger.Error(ctx, "database pool metric callback registration failed", "error", err)
 		return nil
 	}
 	return registration

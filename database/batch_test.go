@@ -151,7 +151,7 @@ func (t *fakeBatchTx) snapshot() (ctxSnapshot, int) {
 }
 
 func newTestTx(r runner) *Tx {
-	return &Tx{conn: conn{r: r}}
+	return &Tx{conn: conn{r: r, ctx: context.Background()}}
 }
 
 // ── Queue bookkeeping ───────────────────────────────────────────────

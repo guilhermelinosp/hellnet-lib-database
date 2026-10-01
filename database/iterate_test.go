@@ -152,7 +152,7 @@ func TestIterDecodesEveryRowByName(t *testing.T) {
 		{int64(3), "carol"},
 	})
 	q := &iterQueryRunner{rows: rows}
-	c := &conn{r: q, o: Options{CommandTimeout: 250 * time.Millisecond}}
+	c := &conn{r: q, ctx: context.Background(), o: Options{CommandTimeout: 250 * time.Millisecond}}
 
 	var got []iterUser
 	err := runIter[iterUser](c, "SELECT id, name FROM users", nil, func(u iterUser) error {
@@ -180,7 +180,7 @@ func TestIterAbortsAndWrapsFnError(t *testing.T) {
 		{int64(3), "carol"},
 	})
 	q := &iterQueryRunner{rows: rows}
-	c := &conn{r: q, o: Options{CommandTimeout: 250 * time.Millisecond}}
+	c := &conn{r: q, ctx: context.Background(), o: Options{CommandTimeout: 250 * time.Millisecond}}
 
 	fnErr := errors.New("consumer says stop")
 	calls := 0
@@ -216,7 +216,7 @@ func TestIterSurfacesStreamError(t *testing.T) {
 	rows.streamErr = streamBroken
 
 	q := &iterQueryRunner{rows: rows}
-	c := &conn{r: q, o: Options{CommandTimeout: 250 * time.Millisecond}}
+	c := &conn{r: q, ctx: context.Background(), o: Options{CommandTimeout: 250 * time.Millisecond}}
 
 	var seen int
 	err := runIter[iterUser](c, "SELECT id FROM users", nil, func(iterUser) error {
