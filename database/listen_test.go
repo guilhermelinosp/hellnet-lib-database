@@ -298,3 +298,26 @@ func TestListenGivesUpOnTransportError(t *testing.T) {
 		t.Fatalf("SQL trail = %v, want [LISTEN events UNLISTEN events]", trail)
 	}
 }
+
+type noTraceClient struct{ t *testing.T }
+
+func (c noTraceClient) Trace(context.Context) telemetry.ContextTracer {
+	c.t.Helper()
+	c.t.Fatal("LISTEN must not open a span through the telemetry client")
+	return telemetry.ContextTracer{}
+}
+
+func TestListenOpensNoDBExecuteSpan(t *testing.T) {
+	fr := &fakeListenRunner{}
+	c := newTestConn(fr)
+	c.conn.ops = noTraceClient{t}
+
+	stop, err := c.Listen("events", func(string) {})
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = stop() }()
+	if got := fr.recordedSQL(); len(got) < 1 || got[0] != "LISTEN events" {
+		t.Fatalf("initial SQL = %v, want [LISTEN events]", got)
+	}
+}
