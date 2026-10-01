@@ -1,5 +1,10 @@
 ## Unreleased
 
+- A `nil` `context.Context` is no longer replaced by `context.Background()` (in
+  `New`, `NewSQLX`, `BeginTx`, the `*Context` query helpers and the stored
+  construction context): callers must pass a real context, as the Go convention
+  requires, instead of silently losing cancelation and tracing.
+
 - `Conn.Listen`/`ListenWithReconnect` no longer open a `db.execute` span for the
   initial `LISTEN`: it ran through the legacy `Conn.Execute` (a span via the
   telemetry client), leaving one orphan root trace per (re)connect.

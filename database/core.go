@@ -137,16 +137,10 @@ func visibleArgs(o Options, args []any) []any {
 	return args
 }
 
-// base returns the construction-time context, falling back to
-// context.Background() when none was stored. All internal timeouts are
+// base returns the construction-time context. All internal timeouts are
 // derived from it (CommandTimeout for statements, ConnectionTimeout for
 // begin/acquire/connect paths).
-func (c *conn) base() context.Context {
-	if c.ctx == nil {
-		return context.Background()
-	}
-	return c.ctx
-}
+func (c *conn) base() context.Context { return c.ctx }
 
 func (c *conn) logger() instrument.Logger {
 	if c != nil && c.obs.logger != nil {
@@ -166,7 +160,7 @@ func timeout(ctx context.Context, d time.Duration) (context.Context, context.Can
 // its context hit the deadline — so reusing that context would make the
 // rollback instantly futile.
 func freshRollbackCtx(parent context.Context, o Options) (context.Context, context.CancelFunc) {
-	return timeout(context.WithoutCancel(contextOrBackground(parent)), o.CommandTimeout)
+	return timeout(context.WithoutCancel(parent), o.CommandTimeout)
 }
 
 // rollbackCtx prefers the caller's construction-time context (keeping its
@@ -359,7 +353,6 @@ func (db *DB) Execute(sql string, args ...any) (int64, error) {
 
 // ExecuteContext executes a command as a child of ctx.
 func (db *DB) ExecuteContext(ctx context.Context, sql string, args ...any) (n int64, err error) {
-	ctx = contextOrBackground(ctx)
 	ctx, span := db.obs.tracer.Start(ctx, "db.execute", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
@@ -397,7 +390,6 @@ func Query[T any](db *DB, sql string, args ...any) ([]T, error) {
 
 // QueryContext runs a typed query as a child of ctx.
 func QueryContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out []T, err error) {
-	ctx = contextOrBackground(ctx)
 	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
@@ -433,7 +425,6 @@ func QueryRow[T any](db *DB, sql string, args ...any) (T, bool, error) {
 
 // QueryRowContext runs a single-row query as a child of ctx.
 func QueryRowContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out T, found bool, err error) {
-	ctx = contextOrBackground(ctx)
 	ctx, span := db.obs.tracer.Start(ctx, "db.query", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
@@ -464,7 +455,6 @@ func Scalar[T any](db *DB, sql string, args ...any) (T, error) {
 
 // ScalarContext runs a scalar query as a child of ctx.
 func ScalarContext[T any](ctx context.Context, db *DB, sql string, args ...any) (out T, err error) {
-	ctx = contextOrBackground(ctx)
 	ctx, span := db.obs.tracer.Start(ctx, "db.scalar", trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
 	started := time.Now()
@@ -480,16 +470,9 @@ func ScalarContext[T any](ctx context.Context, db *DB, sql string, args ...any) 
 	return retried(ctx, db.retry, func() (T, error) { return runScalarContext[T](ctx, &db.conn, sql, args...) })
 }
 
-func contextOrBackground(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
-}
-
 func (c *conn) ExecuteContext(ctx context.Context, sql string, args ...any) (int64, error) {
 	c.fireBeforeContext(ctx, OpExec, sql, args)
-	cctx, cancel := timeout(contextOrBackground(ctx), c.o.CommandTimeout)
+	cctx, cancel := timeout(ctx, c.o.CommandTimeout)
 	defer cancel()
 	start := time.Now()
 	tag, err := c.r.Exec(cctx, sql, args...)
