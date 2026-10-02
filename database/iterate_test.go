@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ── Fakes: full pgx.Rows over canned rows ───────────────────────────
@@ -115,8 +116,9 @@ func (r *fakeIterRows) Values() ([]any, error) {
 	return out, nil
 }
 
-func (*fakeIterRows) RawValues() [][]byte { return nil }
-func (*fakeIterRows) Conn() *pgx.Conn     { return nil }
+func (*fakeIterRows) RawValues() [][]byte  { return nil }
+func (*fakeIterRows) Conn() *pgx.Conn      { return nil }
+func (*fakeIterRows) TypeMap() *pgtype.Map { return nil }
 
 var _ pgx.Rows = (*fakeIterRows)(nil)
 

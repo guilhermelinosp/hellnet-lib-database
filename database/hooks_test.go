@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ── Fakes de runner/pool com linhas reproduzíveis (hooks + métricas) ────────
@@ -97,6 +98,7 @@ func (r *fakeRows) Close()                                       {}
 func (r *fakeRows) Err() error                                   { return r.err }
 func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.NewCommandTag("SELECT 0") }
 func (r *fakeRows) Conn() *pgx.Conn                              { return nil }
+func (r *fakeRows) TypeMap() *pgtype.Map                         { return nil }
 
 var _ pgx.Rows = (*fakeRows)(nil)
 

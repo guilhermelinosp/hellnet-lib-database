@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ── Shared unit-test doubles ────────────────────────────────────────
@@ -306,9 +307,10 @@ func (f *recRows) FieldDescriptions() []pgconn.FieldDescription {
 
 func (f *recRows) CommandTag() pgconn.CommandTag { return pgconn.NewCommandTag("SELECT 1") }
 
-func (f *recRows) Err() error      { return nil }
-func (f *recRows) Close()          { f.closed = true }
-func (f *recRows) Conn() *pgx.Conn { return nil }
+func (f *recRows) Err() error           { return nil }
+func (f *recRows) Close()               { f.closed = true }
+func (f *recRows) Conn() *pgx.Conn      { return nil }
+func (f *recRows) TypeMap() *pgtype.Map { return nil }
 
 var (
 	_ pgx.Rows           = (*recRows)(nil)
