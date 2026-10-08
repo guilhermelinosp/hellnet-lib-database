@@ -321,3 +321,68 @@ func TestListenOpensNoDBExecuteSpan(t *testing.T) {
 		t.Fatalf("initial SQL = %v, want [LISTEN events]", got)
 	}
 }
+
+// A dead pinned connection (every re-LISTEN fails) must be replaced by a fresh
+// pooled one: notifications keep flowing and stop() releases the replacement.
+func TestListenWithReconnectReacquiresFreshConnection(t *testing.T) {
+	dead := &fakeListenRunner{failListen: true, waitErr: errors.New("conn closed")}
+	fresh := &fakeListenRunner{waitErr: context.DeadlineExceeded,
+		notifs: []*pgconn.Notification{{Channel: "events", Payload: "after-reacquire"}}}
+
+	c := newTestConn(dead)
+	c.o.CommandTimeout = 250 * time.Millisecond
+	c.o.ConnectionTimeout = 250 * time.Millisecond
+	var mu sync.Mutex
+	released, acquired := 0, 0
+	c.reacquireFn = func(context.Context) (runner, func(context.Context) error, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		acquired++
+		return fresh, func(context.Context) error { mu.Lock(); released++; mu.Unlock(); return nil }, nil
+	}
+
+	payloads := make(chan string, 4)
+	stop, err := c.ListenWithReconnect("events", func(p string) { payloads <- p },
+		ListenOptions{RetryDelay: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond, ReacquireAfter: 2})
+	if err != nil {
+		t.Fatalf("ListenWithReconnect: %v", err)
+	}
+	select {
+	case got := <-payloads:
+		if got != "after-reacquire" {
+			t.Fatalf("payload = %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no notification delivered after the dead connection was replaced")
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if acquired != 1 || released != 1 {
+		t.Errorf("acquired=%d released=%d, want 1/1 (replacement must be released on stop)", acquired, released)
+	}
+	if trail := fresh.recordedSQL(); len(trail) < 2 || trail[0] != "LISTEN events" || trail[len(trail)-1] != "UNLISTEN events" {
+		t.Errorf("fresh connection SQL trail = %v, want LISTEN ... UNLISTEN", trail)
+	}
+}
+
+// A standalone Conn (no reacquire function) keeps retrying on its own session.
+func TestListenWithReconnectWithoutReacquireKeepsRetrying(t *testing.T) {
+	dead := &fakeListenRunner{failListen: true, waitErr: errors.New("conn closed")}
+	c := newTestConn(dead)
+	c.o.CommandTimeout = 250 * time.Millisecond
+	stop, err := c.ListenWithReconnect("events", func(string) {},
+		ListenOptions{RetryDelay: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond, ReacquireAfter: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if n := len(dead.recordedSQL()); n < 4 {
+		t.Errorf("only %d statements recorded; retries stalled", n)
+	}
+}

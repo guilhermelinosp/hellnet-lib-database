@@ -28,6 +28,9 @@ type Conn struct {
 	conn
 	closeFn func(context.Context) error
 	beginFn func(context.Context) (pgx.Tx, error)
+	// reacquireFn borrows a replacement connection for ListenWithReconnect;
+	// nil for standalone connections (Connect).
+	reacquireFn reacquireFunc
 }
 
 // poolAcquirer is the subset of pgxpool.Pool used to borrow a single
@@ -60,6 +63,13 @@ func (db *DB) Acquire() (*Conn, error) {
 		conn:    db.derive(pconn),
 		closeFn: func(context.Context) error { pconn.Release(); return nil },
 		beginFn: pconn.Begin,
+		reacquireFn: func(ctx context.Context) (runner, func(context.Context) error, error) {
+			p, err := a.Acquire(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			return p, func(context.Context) error { p.Release(); return nil }, nil
+		},
 	}, nil
 }
 

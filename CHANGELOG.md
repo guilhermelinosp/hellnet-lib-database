@@ -1,5 +1,10 @@
 ## Unreleased
 
+- `ListenWithReconnect` now survives a connection that never recovers (failover, restart, killed backend): after
+  `ListenOptions.ReacquireAfter` (default 3) consecutive failed re-listen attempts on a `DB.Acquire` connection, it borrows a
+  fresh pooled connection, issues `LISTEN` there and keeps delivering. The replacement is released by `stop()`; the original
+  pinned `Conn` is still the caller's to `Close`. Standalone `Connect` connections keep retrying on the same session.
+
 - A `nil` `context.Context` is no longer replaced by `context.Background()` (in
   `New`, `NewSQLX`, `BeginTx`, the `*Context` query helpers and the stored
   construction context): callers must pass a real context, as the Go convention

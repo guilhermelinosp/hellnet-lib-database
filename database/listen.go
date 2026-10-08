@@ -51,10 +51,18 @@ type ListenOptions struct {
 	RetryDelay time.Duration
 	// MaxBackoff caps the exponential growth between attempts. <= 0 means 5s.
 	MaxBackoff time.Duration
+	// ReacquireAfter is how many consecutive failed re-listen attempts on the
+	// pinned connection are tolerated before ListenWithReconnect borrows a
+	// fresh connection from the pool (only for connections obtained with
+	// DB.Acquire). <= 0 means 3.
+	ReacquireAfter int
 }
 
 // normalized fills zero values with the documented defaults.
 func (o ListenOptions) normalized() ListenOptions {
+	if o.ReacquireAfter <= 0 {
+		o.ReacquireAfter = 3
+	}
 	if o.RetryDelay <= 0 {
 		o.RetryDelay = 500 * time.Millisecond
 	}
@@ -100,12 +108,52 @@ func (c *Conn) Listen(channel string, handler func(payload string)) (stop func()
 // ListenWithReconnect is Listen with a re-listen policy: when the fetch loop
 // hits a connection error it re-executes `LISTEN channel` forever, with
 // exponential backoff from opts.RetryDelay up to opts.MaxBackoff, logging each
-// attempt at WARN level, until stop() is called. Note this re-listens the SAME
-// pinned connection — if the physical link died permanently the attempts keep
-// failing until the caller stops and rebuilds the Conn; it covers transient
-// interruptions where pgx can keep using the session.
+// attempt at WARN level, until stop() is called. Transient interruptions are
+// covered by re-listening on the SAME pinned connection. When opts.ReacquireAfter
+// consecutive attempts fail and the Conn came from DB.Acquire, the listener
+// borrows a fresh connection from the pool, issues LISTEN there and keeps
+// delivering; the replacement is released by stop() and the original pinned
+// Conn stays the caller's to Close. A Conn from Connect (no pool) keeps
+// retrying on the same session.
 func (c *Conn) ListenWithReconnect(channel string, handler func(payload string), opts ListenOptions) (stop func() error, err error) {
 	return c.listen(channel, handler, opts.normalized(), true)
+}
+
+// listenSession is the connection the fetch loop currently uses. It starts as
+// the caller's pinned Conn and may be replaced by a fresh pooled connection.
+type listenSession struct {
+	mu      sync.Mutex
+	c       *conn
+	waiter  notificationWaiter
+	release func(context.Context) error // non-nil while a replacement connection is in use
+}
+
+func (s *listenSession) current() (*conn, notificationWaiter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.c, s.waiter
+}
+
+// swap makes c the active connection and releases the previous replacement, if any.
+func (s *listenSession) swap(ctx context.Context, c *conn, w notificationWaiter, release func(context.Context) error) {
+	s.mu.Lock()
+	prev := s.release
+	s.c, s.waiter, s.release = c, w, release
+	s.mu.Unlock()
+	if prev != nil {
+		_ = prev(ctx)
+	}
+}
+
+// releaseReplacement gives a replacement connection back to the pool.
+func (s *listenSession) releaseReplacement(ctx context.Context) {
+	s.mu.Lock()
+	rel := s.release
+	s.release = nil
+	s.mu.Unlock()
+	if rel != nil {
+		_ = rel(ctx)
+	}
 }
 
 // listen is the shared body of Listen and ListenWithReconnect. The initial
@@ -135,7 +183,8 @@ func (c *Conn) listen(channel string, handler func(payload string), opts ListenO
 
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
-	go listenLoop(&c.conn, waiter, channel, handler, opts, reconnect, stopCh, doneCh)
+	session := &listenSession{c: &c.conn, waiter: waiter}
+	go listenLoop(session, c.reacquireFn, channel, handler, opts, reconnect, stopCh, doneCh)
 
 	var stopOnce sync.Once
 	stopFn := func() error {
@@ -146,7 +195,10 @@ func (c *Conn) listen(channel string, handler func(payload string), opts ListenO
 		// to a fresh Background-backed timeout when that lineage is done.
 		uctx, ucancel := rollbackCtx(c.base(), c.o)
 		defer ucancel()
-		if _, uerr := c.r.Exec(uctx, unlistenSQL(channel)); uerr != nil {
+		cur, _ := session.current()
+		_, uerr := cur.r.Exec(uctx, unlistenSQL(channel))
+		session.releaseReplacement(uctx)
+		if uerr != nil {
 			return fmt.Errorf("database: unlisten %q: %w", channel, uerr)
 		}
 		return nil
@@ -177,8 +229,8 @@ func sleepCancellable(d time.Duration, stopCh <-chan struct{}) bool {
 // failures it either gives up (v1 policy) or re-listens with backoff until
 // stopped.
 func listenLoop(
-	c *conn,
-	waiter notificationWaiter,
+	session *listenSession,
+	reacquire reacquireFunc,
 	channel string,
 	handler func(payload string),
 	opts ListenOptions,
@@ -191,6 +243,7 @@ func listenLoop(
 	backoff := opts.RetryDelay
 
 	for {
+		c, waiter := session.current()
 		// A dead stored lineage cannot produce new valid tick contexts.
 		if base := c.base(); base.Err() != nil {
 			c.logger().Warn(c.base(), "database listen stopped: context done", "channel", channel)
@@ -229,6 +282,7 @@ func listenLoop(
 		}
 		c.logger().Warn(c.base(), "database listen failed; scheduling re-listen", "channel", channel, "error", err, "retry_in", backoff)
 
+		failures := 0
 		for {
 			if !sleepCancellable(backoff, stopCh) {
 				return
@@ -239,10 +293,47 @@ func listenLoop(
 				c.logger().Info(c.base(), "database re-listen succeeded", "channel", channel)
 				break
 			} else {
+				failures++
 				c.logger().Warn(c.base(), "database re-listen attempt failed", "channel", channel, "error", lerr, "next_retry_in", backoff)
+			}
+
+			if reacquire != nil && failures >= opts.ReacquireAfter {
+				if relistenOnFreshConn(session, c, reacquire, channel) {
+					c.logger().Info(c.base(), "database re-listen succeeded on a fresh pooled connection", "channel", channel)
+					break
+				}
+				failures = 0 // try the pinned connection again before borrowing another one
 			}
 		}
 	}
+}
+
+// reacquireFunc borrows a fresh connection from the pool; the returned release
+// gives it back.
+type reacquireFunc func(ctx context.Context) (runner, func(context.Context) error, error)
+
+// relistenOnFreshConn borrows a new pooled connection, issues LISTEN on it and,
+// on success, makes it the session's active connection.
+func relistenOnFreshConn(session *listenSession, from *conn, reacquire reacquireFunc, channel string) bool {
+	ctx, cancel := timeout(from.base(), from.o.ConnectionTimeout)
+	defer cancel()
+	r, release, err := reacquire(ctx)
+	if err != nil {
+		from.logger().Warn(from.base(), "database re-listen: acquiring a fresh connection failed", "channel", channel, "error", err)
+		return false
+	}
+	fresh := from.derive(r)
+	waiter, werr := resolveListenBackend(r)
+	if werr == nil {
+		_, werr = fresh.Execute(listenSQL(channel))
+	}
+	if werr != nil {
+		_ = release(ctx)
+		from.logger().Warn(from.base(), "database re-listen on a fresh connection failed", "channel", channel, "error", werr)
+		return false
+	}
+	session.swap(ctx, &fresh, waiter, release)
+	return true
 }
 
 // Notify publishes payload on channel through `SELECT pg_notify($1,$2)` (bind

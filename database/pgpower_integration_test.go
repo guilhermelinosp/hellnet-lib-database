@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -220,6 +221,61 @@ func TestIntegrationListenWithReconnectReceives(t *testing.T) {
 	if err := stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
+}
+
+// The listening backend is killed server-side (what a failover or restart does):
+// the pinned connection never recovers, so ListenWithReconnect must borrow a
+// fresh pooled connection and keep delivering notifications.
+func TestIntegrationListenWithReconnectSurvivesTerminatedBackend(t *testing.T) {
+	db := openIntegrationDB(t)
+
+	conn, err := db.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	channel := uniqueChannel("hn_kill")
+	payloads := make(chan string, 8)
+	stop, err := conn.ListenWithReconnect(channel, func(p string) { payloads <- p },
+		ListenOptions{RetryDelay: 50 * time.Millisecond, MaxBackoff: 200 * time.Millisecond, ReacquireAfter: 2})
+	if err != nil {
+		t.Fatalf("ListenWithReconnect: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// The idle listening session's last statement is its LISTEN: find its backend pid by that.
+	row, found, err := QueryRow[struct {
+		PID int `db:"pid"`
+	}](db, "SELECT pid FROM pg_stat_activity WHERE query = $1 AND pid <> pg_backend_pid()", "LISTEN "+channel)
+	if err != nil || !found {
+		t.Fatalf("listening backend not found: found=%v err=%v", found, err)
+	}
+	if _, err := db.Execute("SELECT pg_terminate_backend($1)", row.PID); err != nil {
+		t.Fatalf("pg_terminate_backend: %v", err)
+	}
+	notifier, err := db.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire(notifier): %v", err)
+	}
+	defer func() { _ = notifier.Close() }()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		payload := fmt.Sprintf("after-kill-%d", i)
+		_ = notifier.Notify(channel, payload)
+		select {
+		case got := <-payloads:
+			if strings.HasPrefix(got, "after-kill-") {
+				if err := stop(); err != nil {
+					t.Fatalf("stop: %v", err)
+				}
+				return
+			}
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	t.Fatal("no notification delivered after the listening backend was terminated")
 }
 
 // ── Streaming iteration with constant memory ────────────────────────
